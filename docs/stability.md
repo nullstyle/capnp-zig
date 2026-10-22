@@ -276,7 +276,7 @@ integer, so the snapshots used to differ by the platform that generated them.
   rejection of question-id reuse while an early-Finish tombstone is
   undischarged.
 - **Cross-implementation e2e runs in hosted CI on Linux.** The `Zig e2e
-  interop` job in `ci.yml` runs on `ubuntu-latest` for every push to `main`
+  interop` job in `ci.yml` runs on `ubuntu-24.04` for every push to `main`
   and every pull request. It runs `just e2e-zig`, the full Docker matrix
   against the C++, Go, Python, and Rust reference peers (every schema and
   direction, minus the documented reference-library skips), then the same

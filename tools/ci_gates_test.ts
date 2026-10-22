@@ -1,21 +1,31 @@
 // Tests for tools/ci_gates.ts. No network: the Nightly gate reads API
 // responses recorded with `nightly-gate --record` (tools/ci_gates_fixtures/,
 // trimmed to the fields the tool reads), and the failure parser reads real
-// excerpts of the two failed Nightly logs of 10-13 and 10-15.
+// excerpts of the two failed Nightly logs of 10-13 and 10-15. The job
+// headroom gate reads responses recorded with `job-headroom --record`: the
+// 10 green main CI runs up to bdc656f, and the branch CI run 39537367357.
 //
 //   deno test --allow-all --no-config tools/ci_gates_test.ts
 
 import {
   annotate,
+  collectHeadroom,
   evaluateGate,
+  evaluateHeadroom,
   type Evidence,
   failureNames,
   FixtureApi,
   type FlakeRow,
   GateError,
+  HEADROOM_RUNS,
+  type HeadroomEvidence,
+  headroomRunsPath,
+  jobNamePattern,
   jobTimeouts,
+  latestJobsPath,
   MAX_NAMED,
   NAME_TITLE,
+  normalizeJobName,
   OVERFLOW_TITLE,
   parseKnownFlakes,
   rowInForce,
@@ -513,7 +523,7 @@ Deno.test("the plan's window of bbf91e7 is refused, passes with 2 rows in force,
 
 Deno.test("a row covers only its own job", async () => {
   const rows = [
-    `RPC soak (chaos + deadlines, ubuntu-latest) | 38377271133 | nullstyle | 2026-10-13 | 2026-10-27`,
+    `RPC soak (chaos + deadlines, ubuntu-24.04) | 38377271133 | nullstyle | 2026-10-13 | 2026-10-27`,
     `${EXTENDED} | 38713314813 | nullstyle | 2026-10-15 | 2026-10-29`,
   ];
   const { result } = await gate(
@@ -761,18 +771,19 @@ jobs:
   # a comment
   with-timeout:
     name: A
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30 # measured
     steps:
       - run: echo
   step-timeout-only:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: s
         timeout-minutes: 35
         run: |
           timeout-minutes: 5
   quoted:
+    name: "Q #1 (\${{ matrix.os }})" # a comment
     timeout-minutes: "12"
     steps: []
 `;
@@ -786,6 +797,11 @@ Deno.test("job-timeouts reads only job-level keys", () => {
     "quoted",
     "12",
   ]], "jobs");
+  assertEquals(
+    jobs.map((j) => j.name),
+    ["A", null, "Q #1 (${{ matrix.os }})"],
+    "job-level names only; a step name is not one",
+  );
   assertEquals(timeoutProblems("x.yml", jobs), [
     'x.yml:12: job "step-timeout-only" has no job-level timeout-minutes',
   ], "problems");
@@ -823,6 +839,578 @@ Deno.test("job-timeouts refuses bad values and unknown layouts", () => {
   assertThrows(
     () => jobTimeouts("jobs:\n  a:\n    - x\n"),
     /expected a job key/,
+  );
+  // A quoted name with an escape: the scan does not read escapes, so it
+  // stops instead of cutting the name at the escaped quote.
+  const named = (v: string) => jobTimeouts(`jobs:\n  a:\n    name: ${v}\n`);
+  assertEquals(named('"A # B" # c')[0].name, "A # B", "double-quoted");
+  assertEquals(named("'A (b)'")[0].name, "A (b)", "single-quoted");
+  assertThrows(() => named('"A \\" B"'), /workflow:3: .*escape/);
+  assertThrows(() => named("'it''s'"), /workflow:3: .*escape/);
+});
+
+// ---------------------------------------------------------------------------
+// job headroom
+
+// The 10 green main CI runs up to bdc656f (2026-10-17 to 10-21), recorded
+// with `job-headroom --record`. Their Linux jobs carry ubuntu-latest.
+const HEADROOM_MAIN = "headroom-ci-main-bdc656f.json";
+// The branch CI run 39537367357 (bdc656f, workflow_dispatch), where QUIC
+// targeted transport on Windows took 24.8 min.
+const HEADROOM_BRANCH = "headroom-ci-branch-39537367357.json";
+const BRANCH_RUN = 39537367357;
+const NEWEST_MAIN_RUN = 39541793776;
+const QUIC_WIN = "QUIC targeted transport (windows-latest)";
+
+interface TimedJob {
+  id: number;
+  name: string;
+  conclusion: string;
+  started_at: string;
+  completed_at: string;
+}
+
+function mainRunIds(responses: Record<string, unknown>): number[] {
+  const listing = responses[headroomRunsPath(REPO, "ci.yml", "main", 10)] as {
+    workflow_runs: { id: number }[];
+  };
+  return listing.workflow_runs.map((r) => r.id);
+}
+
+function jobsOf(responses: Record<string, unknown>, run: number): TimedJob[] {
+  return (responses[latestJobsPath(REPO, run)] as { jobs: TimedJob[] }).jobs;
+}
+
+// A workflow with only the quic-transport job, at the given cap. The other
+// jobs of the recorded runs match no job of it, so they are not checked.
+function quicWorkflow(minutes: number): string {
+  return [
+    "jobs:",
+    "  quic-transport:",
+    "    name: QUIC targeted transport (${{ matrix.os }})",
+    "    runs-on: ${{ matrix.os }}",
+    `    timeout-minutes: ${minutes}`,
+    "",
+  ].join("\n");
+}
+
+// The recorded main runs, with the QUIC Windows job of the newest one given
+// the start and end times of the same job in the branch run (24.8 min).
+function withBranchPeak(): Record<string, unknown> {
+  const responses = fixture(HEADROOM_MAIN);
+  const branch = jobsOf(fixture(HEADROOM_BRANCH), BRANCH_RUN).find((j) =>
+    j.name === QUIC_WIN
+  )!;
+  const target = jobsOf(responses, NEWEST_MAIN_RUN).find((j) =>
+    j.name === QUIC_WIN
+  )!;
+  target.started_at = branch.started_at;
+  target.completed_at = branch.completed_at;
+  return responses;
+}
+
+async function headroom(
+  responses: Record<string, unknown>,
+  workflow: string,
+  count = HEADROOM_RUNS,
+) {
+  const evidence = await collectHeadroom(
+    new FixtureApi(responses),
+    REPO,
+    "ci.yml",
+    "main",
+    count,
+  );
+  return {
+    evidence,
+    result: evaluateHeadroom(evidence, jobTimeouts(workflow, "ci.yml"), {
+      file: "ci.yml",
+    }),
+  };
+}
+
+function refusals(lines: string[]): string[] {
+  return lines.filter((l) => l.startsWith("REFUSED"));
+}
+
+function lineFor(lines: string[], name: string): string {
+  const found = lines.filter((l) => l.startsWith(`  ${name}: `));
+  assert(found.length === 1, `one line for ${name}:\n${lines.join("\n")}`);
+  return found[0];
+}
+
+Deno.test("job-headroom reads the green runs and the succeeded jobs in them", async () => {
+  const { evidence } = await headroom(fixture(HEADROOM_MAIN), quicWorkflow(40));
+  assertEquals(evidence.runs.length, 10, "runs");
+  assertEquals(evidence.runs[0].id, NEWEST_MAIN_RUN, "newest first");
+  assertEquals(evidence.runs[9].id, 39070979687, "oldest");
+  // 30 jobs per run, all succeeded.
+  assertEquals(evidence.samples.length, 300, "samples");
+  const quic = evidence.samples.filter((s) => s.name === QUIC_WIN);
+  assertEquals(quic.length, 10, "one QUIC Windows job per run");
+  assertEquals(
+    Math.max(...quic.map((s) => s.seconds)),
+    1377,
+    "QUIC Windows peak: 22 min 57 s",
+  );
+
+  // A job that did not succeed, or never started, is not a sample.
+  const responses = fixture(HEADROOM_MAIN);
+  const [first, second] = jobsOf(responses, NEWEST_MAIN_RUN);
+  first.conclusion = "skipped";
+  (second as { started_at: string | null }).started_at = null;
+  const fewer = await headroom(responses, quicWorkflow(40));
+  assertEquals(fewer.evidence.samples.length, 298, "skipped and unstarted");
+});
+
+Deno.test("the recorded main runs pass a 40-minute QUIC cap and are refused at 30", async () => {
+  const at40 = await headroom(fixture(HEADROOM_MAIN), quicWorkflow(40));
+  assert(at40.result.pass, at40.result.lines.join("\n"));
+  assertEquals(
+    lineFor(at40.result.lines, QUIC_WIN),
+    `  ${QUIC_WIN}: peak 23.0 min (run ${NEWEST_MAIN_RUN}), cap 40 min, 57.4%, 10 runs`,
+    "QUIC Windows at 40",
+  );
+  const at30 = await headroom(fixture(HEADROOM_MAIN), quicWorkflow(30));
+  assert(!at30.result.pass, "23.0 of 30 min is 76.5%: refuse");
+  assertEquals(refusals(at30.result.lines), [
+    `REFUSED: ${QUIC_WIN} peaked at 23.0 min in run ${NEWEST_MAIN_RUN}, 76.5% of its 30-min cap; the limit is 75% (22.5 min)`,
+  ], "refusals");
+  assert(
+    lineFor(at30.result.lines, QUIC_WIN).endsWith(": OVER 75%"),
+    at30.result.lines.join("\n"),
+  );
+});
+
+Deno.test("a 24.8-minute peak is refused at a 30-minute cap and passes at 40", async () => {
+  const at30 = await headroom(withBranchPeak(), quicWorkflow(30));
+  assert(!at30.result.pass, at30.result.lines.join("\n"));
+  assertEquals(refusals(at30.result.lines), [
+    `REFUSED: ${QUIC_WIN} peaked at 24.8 min in run ${NEWEST_MAIN_RUN}, 82.5% of its 30-min cap; the limit is 75% (22.5 min)`,
+  ], "refusals");
+  const at40 = await headroom(withBranchPeak(), quicWorkflow(40));
+  assert(at40.result.pass, at40.result.lines.join("\n"));
+  assert(
+    lineFor(at40.result.lines, QUIC_WIN).includes(
+      "peak 24.8 min (run 39541793776), cap 40 min, 61.9%",
+    ),
+    at40.result.lines.join("\n"),
+  );
+});
+
+// 10 runs (ids 1 to 10, newest first) with one sample per name in each run.
+// `peaks` gives the duration of a name in run 1; in the other runs each name
+// takes 60 s.
+function syntheticEvidence(peaks: Record<string, number>): HeadroomEvidence {
+  const runs = Array.from({ length: 10 }, (_, i) => ({
+    id: i + 1,
+    sha: "0".repeat(40),
+    event: "push",
+    createdAt: `2026-10-${String(19 - i).padStart(2, "0")}T00:00:00Z`,
+    attempt: 1,
+  }));
+  const samples = runs.flatMap((run) =>
+    Object.entries(peaks).map(([name, seconds], k) => ({
+      run: run.id,
+      job: 100 * run.id + k,
+      name,
+      seconds: run.id === 1 ? seconds : 60,
+    }))
+  );
+  return { workflow: "ci.yml", branch: "main", runs, samples };
+}
+
+Deno.test("a peak at exactly 75% of the cap passes, and one second more is refused", () => {
+  const jobs = jobTimeouts(
+    "jobs:\n  j:\n    name: J\n    timeout-minutes: 20\n",
+  );
+  const at = evaluateHeadroom(syntheticEvidence({ J: 900 }), jobs);
+  assert(at.pass, `15 of 20 min:\n${at.lines.join("\n")}`);
+  assert(
+    !evaluateHeadroom(syntheticEvidence({ J: 901 }), jobs).pass,
+    "15 min 1 s of 20 min",
+  );
+});
+
+Deno.test("the history of a job carries across the ubuntu-latest to ubuntu-24.04 rename", async () => {
+  assertEquals(
+    [
+      "Test (ubuntu-latest)",
+      "RPC soak (chaos + deadlines, ubuntu-latest)",
+      "Test (ubuntu-latest-arm)",
+      "Test (ubuntu-24.04)",
+      "ubuntu-latest",
+    ].map((n) => normalizeJobName(n)),
+    [
+      "Test (ubuntu-24.04)",
+      "RPC soak (chaos + deadlines, ubuntu-24.04)",
+      "Test (ubuntu-latest-arm)",
+      "Test (ubuntu-24.04)",
+      "ubuntu-24.04",
+    ],
+    "names",
+  );
+
+  // Half of the runs as if they ran after the rename.
+  const responses = fixture(HEADROOM_MAIN);
+  for (const run of mainRunIds(responses).slice(0, 5)) {
+    for (const job of jobsOf(responses, run)) {
+      job.name = job.name.replace("ubuntu-latest", "ubuntu-24.04");
+    }
+  }
+  const ci = await Deno.readTextFile(`${ROOT}/.github/workflows/ci.yml`);
+  const { evidence, result } = await headroom(responses, ci);
+  const text = result.lines.join("\n");
+  assert(result.pass, text);
+  assert(!text.includes("ubuntu-latest)"), text);
+  // The 5 Linux matrix legs of the committed ci.yml (Test, QUIC targeted
+  // transport, Fd passing compiled out, Hardening gate, ReleaseSafe
+  // hardening tests) each have all 10 runs. A leg that matched no job of
+  // ci.yml would add a note line here, which does not end that way.
+  const linux = result.lines.filter((l) => l.includes("(ubuntu-24.04)"));
+  assertEquals(linux.length, 5, `Linux legs:\n${text}`);
+  assert(linux.every((l) => l.endsWith(", 10 runs")), text);
+  assert(
+    lineFor(result.lines, "Test (ubuntu-24.04)").endsWith(", 10 runs"),
+    text,
+  );
+
+  // With no rename map, the history of each Linux leg starts over: each of
+  // its two names has 5 of the 10 runs, and the gate refuses all 10 names.
+  const bare = evaluateHeadroom(evidence, jobTimeouts(ci, "ci.yml"), {
+    file: "ci.yml",
+    renames: [],
+  });
+  assert(!bare.pass, bare.lines.join("\n"));
+  const thin = refusals(bare.lines);
+  assertEquals(thin.length, 10, `refusals:\n${thin.join("\n")}`);
+  assert(
+    thin.every((l) => l.includes(" succeeded in 5 of the 10 green runs;")),
+    thin.join("\n"),
+  );
+  const testLine = ci.split("\n").indexOf("  test:") + 1;
+  for (const name of ["Test (ubuntu-latest)", "Test (ubuntu-24.04)"]) {
+    assert(
+      thin.includes(
+        `REFUSED: ${name} succeeded in 5 of the 10 green runs; the gate needs 10 (job "test", ci.yml:${testLine}). Wait for more green runs, or pass --allow-few-runs test`,
+      ),
+      thin.join("\n"),
+    );
+  }
+});
+
+Deno.test("job-headroom lists the run names it cannot check, refuses too few runs and refuses ambiguous names", async () => {
+  const { result } = await headroom(fixture(HEADROOM_MAIN), quicWorkflow(40));
+  assert(result.pass, result.lines.join("\n"));
+  assert(
+    result.lines.includes(
+      'note: job "Test (macos-latest)" matches no job of ci.yml (10 runs); it is not checked',
+    ),
+    result.lines.join("\n"),
+  );
+  assertEquals(
+    result.lines.at(-1),
+    "PASS: 1 job of ci.yml (3 job names) peaked at or below 75% of its cap; 1 of 1 ran in at least 10 of the 10 green runs",
+    "PASS line",
+  );
+
+  // Fewer green runs than the gate needs.
+  const responses = fixture(HEADROOM_MAIN);
+  const key = headroomRunsPath(REPO, "ci.yml", "main", 10);
+  const listing = responses[key] as { workflow_runs: unknown[] };
+  listing.workflow_runs = listing.workflow_runs.slice(0, 9);
+  const few = await headroom(responses, quicWorkflow(40));
+  assert(!few.result.pass, "9 runs");
+  assertEquals(refusals(few.result.lines), [
+    "REFUSED: 9 green runs of ci.yml on main; the gate needs 10",
+  ], "too few runs");
+
+  // A job with no usable cap.
+  const noCap = await headroom(
+    fixture(HEADROOM_MAIN),
+    "jobs:\n  quic-transport:\n    name: QUIC targeted transport (${{ matrix.os }})\n",
+  );
+  assert(!noCap.result.pass, "no cap");
+  assert(
+    refusals(noCap.result.lines).every((l) =>
+      l.includes("has no job-level timeout-minutes from 1 to 360")
+    ),
+    noCap.result.lines.join("\n"),
+  );
+
+  // Two templates that match the same name.
+  const twice = quicWorkflow(40) +
+    "  other:\n    name: QUIC ${{ matrix.x }}\n    timeout-minutes: 40\n";
+  let message = "";
+  await headroom(fixture(HEADROOM_MAIN), twice).catch((e) =>
+    message = e.message
+  );
+  assert(/matches 2 jobs of ci\.yml/.test(message), `got ${message}`);
+});
+
+// The recorded main runs with QUIC Windows only in the second newest run,
+// where it took 14.1 min.
+function withQuicWindowsOnce(): Record<string, unknown> {
+  const responses = fixture(HEADROOM_MAIN);
+  for (const [i, run] of mainRunIds(responses).entries()) {
+    if (i === 1) continue;
+    const listing = responses[latestJobsPath(REPO, run)] as {
+      total_count: number;
+      jobs: TimedJob[];
+    };
+    listing.jobs = listing.jobs.filter((j) => j.name !== QUIC_WIN);
+    listing.total_count = listing.jobs.length;
+  }
+  return responses;
+}
+
+Deno.test("a job of the workflow with no successful run is refused", async () => {
+  // quic-transport with an edited name: no run carries the new name, so the
+  // job has no sample. The old runs break a 30-min cap, but no run is
+  // checked against it.
+  const renamed = quicWorkflow(30).replace(
+    "QUIC targeted transport",
+    "QUIC transport",
+  );
+  const { result } = await headroom(fixture(HEADROOM_MAIN), renamed);
+  assert(!result.pass, result.lines.join("\n"));
+  assertEquals(refusals(result.lines), [
+    'REFUSED: job "quic-transport" (ci.yml:2) has no successful run in the 10 green runs, so its cap is not checked. Wait for 10 green runs, or pass --allow-few-runs quic-transport',
+    "REFUSED: no successful job in the 10 green runs matches a job of ci.yml",
+  ], "renamed job");
+  assert(
+    result.lines.includes(
+      `note: job "${QUIC_WIN}" matches no job of ci.yml (10 runs); it is not checked`,
+    ),
+    result.lines.join("\n"),
+  );
+
+  // A new job with no run yet.
+  const added = quicWorkflow(40) + "  new-job:\n    timeout-minutes: 10\n";
+  const fresh = await headroom(fixture(HEADROOM_MAIN), added);
+  assert(!fresh.result.pass, fresh.result.lines.join("\n"));
+  assertEquals(refusals(fresh.result.lines), [
+    'REFUSED: job "new-job" (ci.yml:6) has no successful run in the 10 green runs, so its cap is not checked. Wait for 10 green runs, or pass --allow-few-runs new-job',
+  ], "new job");
+});
+
+Deno.test("a job name in fewer than 10 of the green runs is refused", async () => {
+  const { result } = await headroom(withQuicWindowsOnce(), quicWorkflow(40));
+  assert(!result.pass, result.lines.join("\n"));
+  assertEquals(refusals(result.lines), [
+    `REFUSED: ${QUIC_WIN} succeeded in 1 of the 10 green runs; the gate needs 10 (job "quic-transport", ci.yml:2). Wait for more green runs, or pass --allow-few-runs quic-transport`,
+  ], "refusals");
+  assert(
+    lineFor(result.lines, QUIC_WIN).endsWith(
+      ", cap 40 min, 35.2%, 1 run: FEWER THAN 10 RUNS",
+    ),
+    result.lines.join("\n"),
+  );
+});
+
+Deno.test("a job name counts runs, not jobs", () => {
+  // A matrix job whose name: has no matrix value gives each leg the same
+  // name. 3 legs in 4 of the 10 runs are 12 jobs, but only 4 runs.
+  const evidence = syntheticEvidence({ Other: 60 });
+  for (const run of evidence.runs.slice(0, 4)) {
+    for (let leg = 0; leg < 3; leg++) {
+      evidence.samples.push({
+        run: run.id,
+        job: 1000 * run.id + leg,
+        name: "J",
+        seconds: 60,
+      });
+    }
+  }
+  const jobs = jobTimeouts(
+    "jobs:\n  j:\n    name: J\n    timeout-minutes: 20\n  other:\n    name: Other\n    timeout-minutes: 20\n",
+  );
+  const result = evaluateHeadroom(evidence, jobs);
+  assertEquals(refusals(result.lines), [
+    'REFUSED: J succeeded in 4 of the 10 green runs; the gate needs 10 (job "j", ci.yml:2). Wait for more green runs, or pass --allow-few-runs j',
+  ], "refusals");
+});
+
+Deno.test("runs with no successful job of the workflow are refused", async () => {
+  const responses = fixture(HEADROOM_MAIN);
+  for (const run of mainRunIds(responses)) {
+    responses[latestJobsPath(REPO, run)] = { total_count: 0, jobs: [] };
+  }
+  const { evidence, result } = await headroom(responses, quicWorkflow(30));
+  assert(!result.pass, result.lines.join("\n"));
+  const none =
+    "REFUSED: no successful job in the 10 green runs matches a job of ci.yml";
+  assert(refusals(result.lines).includes(none), result.lines.join("\n"));
+  // --allow-few-runs does not excuse it.
+  const excused = evaluateHeadroom(evidence, jobTimeouts(quicWorkflow(30)), {
+    file: "ci.yml",
+    allowFewRuns: ["quic-transport"],
+  });
+  assert(!excused.pass, excused.lines.join("\n"));
+  assertEquals(refusals(excused.lines), [none], "excused");
+});
+
+Deno.test("--allow-few-runs passes a job with few runs, and still checks its peaks", async () => {
+  const thin = await headroom(withQuicWindowsOnce(), quicWorkflow(40));
+  const jobs = jobTimeouts(quicWorkflow(40));
+  const excused = evaluateHeadroom(thin.evidence, jobs, {
+    file: "ci.yml",
+    allowFewRuns: ["quic-transport"],
+  });
+  assert(excused.pass, excused.lines.join("\n"));
+  assertEquals(
+    excused.lines.at(-1),
+    "PASS: 1 job of ci.yml (3 job names) peaked at or below 75% of its cap; 0 of 1 ran in at least 10 of the 10 green runs; 1 passed with --allow-few-runs: quic-transport",
+    "PASS line",
+  );
+
+  // A peak over 75% is still refused: 14.1 of 15 min.
+  const tight = evaluateHeadroom(thin.evidence, jobTimeouts(quicWorkflow(15)), {
+    file: "ci.yml",
+    allowFewRuns: ["quic-transport"],
+  });
+  assert(!tight.pass, tight.lines.join("\n"));
+  assert(
+    refusals(tight.lines).some((l) =>
+      l.startsWith(`REFUSED: ${QUIC_WIN} peaked at 14.1 min in run `)
+    ),
+    tight.lines.join("\n"),
+  );
+
+  // A job with no run at all.
+  const added = quicWorkflow(40) + "  new-job:\n    timeout-minutes: 10\n";
+  const full = await headroom(fixture(HEADROOM_MAIN), quicWorkflow(40));
+  const none = evaluateHeadroom(full.evidence, jobTimeouts(added), {
+    file: "ci.yml",
+    allowFewRuns: ["new-job"],
+  });
+  assert(none.pass, none.lines.join("\n"));
+  assertEquals(
+    none.lines.at(-1),
+    "PASS: 2 jobs of ci.yml (3 job names) peaked at or below 75% of their caps; 1 of 2 ran in at least 10 of the 10 green runs; 1 passed with --allow-few-runs: new-job",
+    "PASS line",
+  );
+
+  // A job id that is not in the file excuses nothing, and a job that has
+  // its runs needs no excuse.
+  const typo = evaluateHeadroom(thin.evidence, jobs, {
+    file: "ci.yml",
+    allowFewRuns: ["quic-transprot"],
+  });
+  assert(!typo.pass, typo.lines.join("\n"));
+  assert(
+    typo.lines.includes(
+      'note: --allow-few-runs quic-transprot: ci.yml has no job "quic-transprot"',
+    ),
+    typo.lines.join("\n"),
+  );
+  const unneeded = evaluateHeadroom(full.evidence, jobs, {
+    file: "ci.yml",
+    allowFewRuns: ["quic-transport"],
+  });
+  assert(unneeded.pass, unneeded.lines.join("\n"));
+  assert(
+    unneeded.lines.includes(
+      "note: --allow-few-runs quic-transport: the job ran in at least 10 green runs; it is checked as usual",
+    ),
+    unneeded.lines.join("\n"),
+  );
+  assert(
+    unneeded.lines.at(-1)!.endsWith(
+      "; 1 of 1 ran in at least 10 of the 10 green runs",
+    ),
+    unneeded.lines.join("\n"),
+  );
+});
+
+Deno.test("job-headroom reads main runs from push, schedule and workflow_dispatch only", async () => {
+  const responses = fixture(HEADROOM_MAIN);
+  const listing = responses[headroomRunsPath(REPO, "ci.yml", "main", 10)] as {
+    workflow_runs: { id: number; event: string; head_branch: string }[];
+  };
+  // A pull request from a fork's own main branch is listed under main.
+  listing.workflow_runs[0].event = "pull_request";
+  listing.workflow_runs[1].head_branch = "feature";
+  const ids = mainRunIds(fixture(HEADROOM_MAIN));
+  const dropped = await headroom(responses, quicWorkflow(40));
+  assertEquals(dropped.evidence.runs.map((r) => r.id), ids.slice(2), "runs");
+  assertEquals(refusals(dropped.result.lines), [
+    "REFUSED: 8 green runs of ci.yml on main; the gate needs 10",
+  ], "refusals");
+
+  listing.workflow_runs[0].event = "workflow_dispatch";
+  listing.workflow_runs[1].head_branch = "main";
+  listing.workflow_runs[1].event = "schedule";
+  const kept = await headroom(responses, quicWorkflow(40));
+  assertEquals(kept.evidence.runs.map((r) => r.id), ids, "all runs");
+});
+
+Deno.test("a run with a second page of jobs cannot be evaluated", async () => {
+  const responses = fixture(HEADROOM_MAIN);
+  const listing = responses[latestJobsPath(REPO, NEWEST_MAIN_RUN)] as {
+    total_count: number;
+    jobs: unknown[];
+  };
+  listing.total_count = listing.jobs.length + 1;
+  let message = "";
+  await headroom(responses, quicWorkflow(40)).catch((e) =>
+    message = e instanceof GateError ? e.message : `not a GateError: ${e}`
+  );
+  assert(
+    message ===
+      `run ${NEWEST_MAIN_RUN} has 31 jobs, more than one page; the gate reads only 30`,
+    `got ${message}`,
+  );
+});
+
+Deno.test("a literal job name wins over a template that also matches it", () => {
+  const jobs = jobTimeouts(
+    [
+      "jobs:",
+      "  test:",
+      "    name: Test (${{ matrix.os }})",
+      "    timeout-minutes: 20",
+      "  fmt:",
+      "    name: Test (format)",
+      "    timeout-minutes: 5",
+      "",
+    ].join("\n"),
+  );
+  // 4 min is 20% of the 20-min cap of test, and 80% of the 5-min cap of fmt.
+  const result = evaluateHeadroom(
+    syntheticEvidence({ "Test (linux)": 600, "Test (format)": 240 }),
+    jobs,
+  );
+  assert(!result.pass, result.lines.join("\n"));
+  assertEquals(refusals(result.lines), [
+    "REFUSED: Test (format) peaked at 4.0 min in run 1, 80.0% of its 5-min cap; the limit is 75% (3.8 min)",
+  ], "refusals");
+});
+
+Deno.test("a job name maps to its job through the name template", () => {
+  const [templated, bare, literal] = jobTimeouts(
+    [
+      "jobs:",
+      "  quic-transport:",
+      "    name: QUIC targeted transport (${{ matrix.os }})",
+      "  bare:",
+      "    runs-on: x",
+      "  literal:",
+      "    name: Format check (fast)",
+      "",
+    ].join("\n"),
+  );
+  const t = jobNamePattern(templated);
+  assert(t.test("QUIC targeted transport (windows-latest)"), "matrix value");
+  assert(!t.test("QUIC targeted transport"), "no matrix value");
+  assert(!t.test("xQUIC targeted transport (a)"), "anchored");
+  const b = jobNamePattern(bare);
+  assert(b.test("bare") && b.test("bare (a, b)"), "a job with no name");
+  assert(!b.test("bare2"), "another job id");
+  const l = jobNamePattern(literal);
+  assert(
+    l.test("Format check (fast)") && !l.test("Format check (x)"),
+    "literal",
   );
 });
 
@@ -1049,7 +1637,7 @@ Deno.test("job-timeouts passes on the workflows and fails when one job loses its
     );
     await Deno.writeTextFile(
       `${repo}/.github/workflows/new.yaml`,
-      "jobs:\n  b:\n    runs-on: ubuntu-latest\n",
+      "jobs:\n  b:\n    runs-on: ubuntu-24.04\n",
     );
     await Deno.writeTextFile(`${repo}/.github/workflows/README`, "not yaml\n");
     const added = await cli(["job-timeouts"], {}, repo);
@@ -1085,5 +1673,89 @@ Deno.test("job-timeouts passes on the workflows and fails when one job loses its
     assert(
       red.stdout.includes('job "test" has no job-level timeout-minutes'),
       red.stdout,
+    );
+  }));
+
+Deno.test("job-headroom exits 1 on a 24.8-minute peak at a 30-minute cap, 0 at 40, and 2 when it cannot evaluate", () =>
+  scratch(async (dir) => {
+    const responses = `${dir}/responses.json`;
+    await Deno.writeTextFile(responses, JSON.stringify(withBranchPeak()));
+    const at30 = `${dir}/ci.yml`;
+    await Deno.writeTextFile(at30, quicWorkflow(30));
+    const at40 = `${dir}/at40/ci.yml`;
+    await Deno.mkdir(`${dir}/at40`);
+    await Deno.writeTextFile(at40, quicWorkflow(40));
+    const args = (file: string) => [
+      "job-headroom",
+      "--fixture",
+      responses,
+      "--workflow-file",
+      file,
+    ];
+
+    const red = await cli(args(at30));
+    assertEquals(red.code, 1, `cap 30:\n${red.stdout}${red.stderr}`);
+    assert(
+      red.stdout.includes(`REFUSED: ${QUIC_WIN} peaked at 24.8 min`),
+      red.stdout,
+    );
+    const green = await cli(args(at40));
+    assertEquals(green.code, 0, `cap 40:\n${green.stdout}${green.stderr}`);
+    assert(green.stdout.includes("PASS: "), green.stdout);
+
+    // A job with no run exits 1. --allow-few-runs takes one job id and can
+    // be given more than once.
+    const added = `${dir}/added/ci.yml`;
+    await Deno.mkdir(`${dir}/added`);
+    await Deno.writeTextFile(
+      added,
+      quicWorkflow(40) +
+        "  new-job:\n    timeout-minutes: 10\n  newer-job:\n    timeout-minutes: 10\n",
+    );
+    const unrun = await cli(args(added));
+    assertEquals(unrun.code, 1, `two new jobs:\n${unrun.stdout}`);
+    assert(
+      unrun.stdout.includes(`REFUSED: job "newer-job" (${added}:8)`),
+      unrun.stdout,
+    );
+    const one = await cli([...args(added), "--allow-few-runs", "new-job"]);
+    assertEquals(one.code, 1, `one excused:\n${one.stdout}${one.stderr}`);
+    const both = await cli([
+      ...args(added),
+      "--allow-few-runs",
+      "new-job",
+      "--allow-few-runs=newer-job",
+    ]);
+    assertEquals(both.code, 0, `both excused:\n${both.stdout}${both.stderr}`);
+    const leg = await cli([
+      ...args(added),
+      "--allow-few-runs",
+      "Test (ubuntu-24.04)",
+    ]);
+    assertEquals(leg.code, 2, `a job name, not a job id:\n${leg.stderr}`);
+    assert(leg.stderr.includes("give a job id"), leg.stderr);
+
+    // The workflow name in the API path is the file name.
+    const other = `${dir}/nightly.yml`;
+    await Deno.writeTextFile(other, quicWorkflow(40));
+    assertEquals(
+      (await cli(args(other))).code,
+      2,
+      "no response for nightly.yml",
+    );
+    assertEquals(
+      (await cli([...args(at40), "--runs", "9"])).code,
+      2,
+      "fewer than 10 runs asked for",
+    );
+    assertEquals(
+      (await cli([...args(at40), "--runs", "11"])).code,
+      2,
+      "no response for 11 runs",
+    );
+    assertEquals(
+      (await cli([...args(at40), "extra"])).code,
+      2,
+      "a positional argument",
     );
   }));

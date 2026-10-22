@@ -1,5 +1,15 @@
 # HANDOFF — zig fork change branch: `net.Stream.read` destructures `ReadResult`
 
+**Status (2026-10-21): fixed upstream and in the fork, in no Zig tag. Do
+not send it.** Upstream `0.17.x` has `c629ee4e08` (2026-10-04, "Io.net.Stream:
+fix read post control data changes"). The fork's `build/stable` fixed it
+in `b98ef17f06` (`lib/std/Io/net.zig:1328-1334`). A reference to
+`Stream.read` compiles with the `0.17.x` lib and the fork's lib, and
+fails with the 0.17.0 lib (compile-checked on 2026-10-21 with Zig 0.17.0
+and `--zig-lib-dir`).
+capnp-zig pins tagged 0.17.0, so its own `net_read` calls stay until a
+toolchain move.
+
 Paste this into a session working on the nullstyle zig fork. Self-contained.
 It joins the fork's change-branch list (see the other
 `handoff-zig-fork-*.md` files beside this one). Suggested branch:

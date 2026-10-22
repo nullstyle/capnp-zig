@@ -23,6 +23,10 @@ on:
 # setup-capnp, cache, upload-artifact) have no `id`: when one of them fails,
 # the job has no nightly-failure annotation, and only a row with no test
 # covers it.
+#
+# Linux jobs pin ubuntu-24.04, as ci.yml does (see the comment above its
+# jobs). Their names carry the label, for example
+# "RPC soak (chaos + deadlines, ubuntu-24.04)".
 
 jobs:
   soak:
@@ -31,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -265,14 +269,15 @@ jobs:
 
   fuzz:
     name: Coverage-guided fuzzing with per-target evidence
-    # arm64, not ubuntu-latest: on x86_64 the zig fuzzer's maker dies with
-    # "start index 1 is larger than end index 0" right after the fuzz phase
-    # starts, before any coverage-guided signal — reproduced on CI with both
-    # dev.813 (run 30533131144) and dev.1252 (run 30562797754), i.e. on both
-    # sides of the dev.1190 maker restructure. The same snapshot + command on
-    # aarch64-linux fuzzes a full 10-minute window cleanly (probed 2026-07-30,
-    # native ubuntu-24.04 container: 626s, zero infra panics, growing corpus).
-    # arm runners are free for public repos.
+    # arm64, not the x86_64 ubuntu-24.04 runner: on x86_64 the zig fuzzer's
+    # maker dies with "start index 1 is larger than end index 0" right after
+    # the fuzz phase starts, before any coverage-guided signal — reproduced
+    # on CI with both dev.813 (run 30533131144) and dev.1252 (run
+    # 30562797754), i.e. on both sides of the dev.1190 maker restructure.
+    # The same snapshot + command on aarch64-linux fuzzes a full 10-minute
+    # window cleanly (probed 2026-07-30, native ubuntu-24.04 container: 626s,
+    # zero infra panics, growing corpus). arm runners are free for public
+    # repos.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
@@ -337,7 +342,7 @@ jobs:
 
   extended-gates:
     name: Extended gates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -441,15 +446,20 @@ jobs:
 
       # Heads-up for the owner, never a failure: ci.yml's evented canary is
       # green only while std.Io.Evented fails to compile with the known std
-      # defect. When it stops failing that way, say so on the run summary so
-      # `evented_available` in src/io_backend.zig gets re-checked.
+      # defect. When it stops failing that way, say so on the run summary.
+      # A compile alone does not make Evented usable: at Zig 0.17.0 both
+      # backends refuse listen, accept and connect, Uring panics on
+      # net_write (lib/std/Io/Uring.zig:2120), and Dispatch panics on
+      # net_receive, net_send, net_read and net_write (Dispatch.zig:1713-1716).
+      # So the notice asks for a net_read behavior probe, not for a flip of
+      # `evented_available` in src/io_backend.zig.
       - name: Evented canary notice
         if: ${{ !cancelled() }}
         run: |
           if zig build check-evented-canary --summary none; then
             echo "std.Io.Evented still fails to compile with the known defect; evented_available stays false."
           else
-            echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. If std.Io.Evented now compiles, flip evented_available in src/io_backend.zig and retarget build/evented_canary.zig; otherwise update its expected error and the fork handoff."
+            echo "::notice title=std.Io.Evented canary changed::check-evented-canary no longer sees the expected processReplacePath error. A compile alone does not make Evented usable, so keep evented_available false in src/io_backend.zig. If std.Io.Evented now compiles, run a net_read behavior probe (connect, write and read over std.Io.Evented) on Linux and macOS, and flip the flag only when the probe passes. If it fails with another error, update expected_error in build/evented_canary.zig and docs/upstream/handoff-zig-fork-evented-processreplacepath.md."
           fi
 
       # The tag gate reads these annotations. See "Failure names" at the top
@@ -475,7 +485,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -514,7 +524,7 @@ jobs:
   # baselined from these runs (see the note in bench/baselines-quic.json).
   bench-quic:
     name: QUIC benchmark regression check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6

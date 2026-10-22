@@ -5,6 +5,7 @@
 - **Date:** 2026-10-06
 - **Status:** DRAFT (the owner sends it)
 - **Needed by:** M5 (iOS). capnp-swift does not block on it: the root workaround below is enough for its own static library.
+- **capnp-zig status (2026-10-21):** fixed upstream, in no Zig tag. Upstream `0.17.x` has `f842de1845` ("std.process: match can_spawn and can_replace to Apple SDK availability") and `6171a2be74` ("std.Io.Threaded: only use spawnDarwin in processReplace when spawning is supported", closes upstream issue 37061), both 2026-10-04. The fork's `build/stable` branches from 0.17.0 and still has the defect (`Threaded.zig:358`). capnp-zig compile-checked the fix on 2026-10-21 (Zig 0.17.0 with `--zig-lib-dir`): the repro below builds for `aarch64-ios` with the `0.17.x` lib, and fails with the 0.17.0 lib and the fork's lib. It did not run it on a device. capnp-zig does not send this file; see the [upstream ledger](README.md).
 
 Paste this into a session working on the nullstyle zig fork. It is
 self-contained. It joins the fork's change-branch list (see the other

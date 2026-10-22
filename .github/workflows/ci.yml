@@ -27,6 +27,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Linux jobs pin ubuntu-24.04, not the floating "latest" Ubuntu label,
+# which GitHub moves to Ubuntu 26 from 2026-10-19. The 24.04 image still
+# updates, kernel included (CONTRIBUTING.md, "Toolchain"). Each job keeps
+# its peak duration at or below 75% of its timeout-minutes: `just
+# check-job-headroom` reads the last 10 green main runs.
 jobs:
   reflection-conformance:
     name: Reflection and generated RPC conformance
@@ -103,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -235,7 +240,7 @@ jobs:
 
   fmt-check:
     name: Format check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 0.3 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
@@ -253,12 +258,13 @@ jobs:
         run: just fmt-check
 
   # tools/ci_gates.ts holds the Nightly tag gate (`just check-nightly-gate`),
-  # the Nightly failure annotations that the gate reads and the job-timeout
-  # check. Its tests use recorded API responses and real Nightly log
-  # excerpts, so they need no network and no token.
+  # the Nightly failure annotations that the gate reads, the job-timeout
+  # check and the job headroom check (`just check-job-headroom`, which
+  # release-preflight runs). Its tests use recorded API responses and real
+  # Nightly log excerpts, so they need no network and no token.
   ci-gates:
     name: CI gate tools
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -268,7 +274,7 @@ jobs:
           version: 2026.7.17
           install_args: deno
 
-      - name: Unit tests for the Nightly gate, the failure annotations and the timeout check
+      - name: Unit tests for the Nightly gate, the failure annotations, the timeout check and the headroom check
         run: deno test --allow-all --no-config tools/ci_gates_test.ts
 
       # A hung job without a job-level cap runs for GitHub's 6-hour default.
@@ -280,7 +286,7 @@ jobs:
 
   evented-check:
     name: Evented backend check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 2.3 min (run 38031326412; 19 green runs, 10-10 to
     # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
@@ -322,9 +328,12 @@ jobs:
       # std.Io.Evented compiles at Zig 0.17.0 (Uring and Dispatch set the
       # dropped `Io.VTable.processReplacePath`). The canary compiles a file that
       # references std.Io.Evented and is green ONLY while that compile fails
-      # with the known error. Red means std changed: if Evented now compiles,
-      # flip `evented_available` and retarget the canary (build/evented_canary.zig);
-      # if it fails differently, update the expected error and the fork handoff
+      # with the known error. Red means std changed. If Evented now compiles,
+      # that alone does not make it usable (at 0.17.0 its net operations are
+      # stubs or TODO panics): run a net_read behavior probe, flip
+      # `evented_available` only when it passes, and retarget the canary
+      # (build/evented_canary.zig). If it fails differently, update the
+      # expected error and the fork handoff
       # (docs/upstream/handoff-zig-fork-evented-processreplacepath.md).
       # Ablation: setting `expect_errors = null` in build/evented_canary.zig, or
       # building against a std patched per that handoff, turns it red.
@@ -334,13 +343,18 @@ jobs:
   quic-transport:
     name: QUIC targeted transport (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Slowest healthy run measured across the matrix: 11m (windows). A hung
-    # test binary otherwise burns the 6-hour default before anyone sees it.
-    timeout-minutes: 30
+    # The Windows leg is the slowest. In the 40 green main runs from
+    # 37702964328 (10-07) to 39541793776 (10-21) it took 21.6 min at the
+    # median and 23.8 min at most (run 37891855510). Branch run 39537367357
+    # took 24.8 min, 83% of the old 30-min cap. With that cap, run
+    # 37248467342 (job 111571015980) was cancelled at 30m06s. At 40 min,
+    # 24.8 min is 62% of the cap, under the 75% that `just
+    # check-job-headroom` allows.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -475,7 +489,7 @@ jobs:
 
   docs-smoke:
     name: Docs smoke and snippets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 4.3 min (run 38016756553; 19 green runs, 10-10 to
     # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
@@ -511,7 +525,7 @@ jobs:
 
   cross-targets:
     name: Cross-target compile (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 35.9 min (x86-linux-gnu, run 38977730732; 19 green
     # runs, 10-10 to 10-17). The other targets took at most 19.2 min.
     timeout-minutes: 60
@@ -561,7 +575,7 @@ jobs:
 
   ios-check:
     name: iOS cross-compile (static libraries, no SDK)
-    # ubuntu-latest: the cheapest runner this workflow already uses. A static
+    # ubuntu-24.04: the cheapest runner this workflow already uses. A static
     # library never links, so it needs no Apple SDK and no macOS runner, and
     # running on Linux proves that on every push. `check-ios` compiles
     # capnpc-zig-core for aarch64-ios, aarch64-ios-simulator and
@@ -572,7 +586,7 @@ jobs:
     # lane runs). Nothing reads the vendored submodules.
     # Ablation: putting `isDarwin()` back in `fd_passing.target_supported`
     # turns the six iOS libraries red with std's `Threaded.zig:15486` error.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -597,7 +611,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -638,7 +652,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -696,7 +710,7 @@ jobs:
 
   tsan:
     name: ThreadSanitizer lane
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # ThreadSanitizer instrumentation is 5-20x slower than a normal build, and
     # nothing caches .zig-cache across runs (deliberately — see setup-zig), so
     # every run recompiles the lib module and six suites instrumented from
@@ -728,7 +742,7 @@ jobs:
 
   e2e-zig:
     name: Zig e2e interop
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run measured: 7m. Higher headroom than the ratio used
     # elsewhere because this lane drives Docker.
     timeout-minutes: 30
@@ -776,7 +790,7 @@ jobs:
 
   e2e-quic:
     name: Zig e2e over QUIC
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The Zig e2e server and client over the QUIC baseline wire, all seven
     # schemas: the mode capnp-swift tests against. The first green run took
     # 5m14s (run 38970205763, with a 1.5 min dependency fetch). The slowest
@@ -830,7 +844,7 @@ jobs:
 
   bench-check:
     name: Benchmark regression check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 3.3 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
@@ -853,7 +867,7 @@ jobs:
 
   wasm-build:
     name: WASM build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 2.5 min (run 38031326412; 19 green runs, 10-10 to
     # 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
@@ -875,7 +889,7 @@ jobs:
 
   release-build:
     name: Release build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Slowest healthy run: 3.1 min (19 green runs, 10-10 to 10-17). 10 min
     # is the floor for short jobs, so a slow runner or a cold mise cache does
     # not fail a healthy run.
@@ -905,7 +919,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:

@@ -16,6 +16,14 @@ fits together.
   and the other pinned helpers. Run `mise run bootstrap:capnp` to install the
   verified WASM schema compiler before compiler-dependent tests or generation.
   Use `mise exec --` so commands use those tool versions.
+- **CI runner image**: the Linux jobs in `.github/workflows` pin
+  `ubuntu-24.04`, not `ubuntu-latest`, which GitHub moves to Ubuntu 26 from
+  2026-10-19. The macOS and Windows jobs use `macos-latest` and
+  `windows-latest`. GitHub still updates the 24.04 image, its kernel
+  included. So `tests/rpc/transport/unix/unix_kernel_semantics_test.zig`,
+  which pins the kernel's fd-passing behaviour, can still go red with no
+  change in this repository. A move to Ubuntu 26.04 is a change of its own,
+  with green runs.
 
 ## Building and testing
 

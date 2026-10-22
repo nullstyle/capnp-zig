@@ -175,7 +175,7 @@ Differences from C++, all deliberate:
    remote finished Y and the hold ends without Y's answer. While a call
    that the remote has not finished is pipelined on Y, it still needs Y's
    results, so ANSWER_FINISHED waits for the Finish of the last such call
-   (v0.28.1), and comes only if the remote sends it. The host's answer is
+   (v0.29.0), and comes only if the remote sends it. The host's answer is
    still sent, and only X ends.
 4. C++ delivers results with capabilities. The shim gives one RETURN
    EXCEPTION for them (the Peer cannot re-deliver those results locally

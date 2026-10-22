@@ -33,6 +33,7 @@ First, fix the answer-path defects that capnp-swift 0.2.0 and capnp-deno can hit
 **Decided by the owner on 2026-10-21:**
 
 - **D1: option A.** Cut a v0.28.1 patch with `bdc656f`, P0-1 and P1-2.
+  - **Changed on 2026-10-22 to option B.** The patch branch (`sprint/v0281-patch`) still had a regression. With a go-capnp caller, a finished call pipelined on an answer could be forwarded back and never finished, so a later reuse of its id closed the connection. The owner held the patch. capnp-swift and capnp-deno get a workaround now (`docs/downstreams.md`, "Relay ... now"). P0-1 ships in v0.29.0 together with a fix in the call-forwarding path. The push order drops step 3, and P1-6 commit A and P2-2 land at once.
 - **D2: option B.** v0.29.0 stays on quic-zig v0.38.0. Send the tag request now (P2-2), and move cluster B in its own release after the tag exists.
 
 The text below is the question as the owner saw it.

@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CI: a job headroom check (`just check-job-headroom`).** The new
+  `tools/ci_gates.ts job-headroom` reads the 10 most recent green main
+  runs of a workflow and the time that each job took. It prints each job's
+  peak duration and its run id. It refuses when a peak is over 75% of the
+  job's `timeout-minutes`. It also refuses a job that ran in fewer than 10
+  of the runs, so a job with no history does not pass unchecked. This
+  covers a new job, a job whose `name:` changed, and a matrix leg that was
+  added or removed. `--allow-few-runs JOB_ID` lets such a job pass, and its
+  peaks are still checked. A job's name carries its runner label, so the
+  check counts a job named with `ubuntu-latest` as the same job with
+  `ubuntu-24.04`. Without that, each Linux leg would start over and be
+  refused. Only main runs from push, schedule and workflow_dispatch count.
+  `release-preflight` runs the check on `ci.yml` and `nightly.yml`. Its
+  tests use recorded API responses: the 10 green main CI runs up to
+  `bdc656f`, and branch run 39537367357. On the live main runs of
+  2026-10-21, it refused the old 30-min cap of QUIC targeted transport
+  (the Windows leg peaked at 23.0 min, 76.5% of the cap). It passes at the
+  new 40-min cap (57.4%).
+
+### Changed
+
+- **CI: the Linux jobs pin `ubuntu-24.04`.** GitHub moves `ubuntu-latest`
+  to Ubuntu 26 from 2026-10-19. `ci.yml`, `nightly.yml` and `release.yml`
+  now name `ubuntu-24.04`, so the move does not change our runners. Job
+  names change with the label, for example "Test (ubuntu-24.04)". `.actrc`
+  and the `just act-*` recipes use the new label. The header of
+  `.github/known-flakes.txt` says that Linux job names carry it. GitHub
+  still updates the 24.04 image, its kernel included (CONTRIBUTING.md,
+  "Toolchain").
+- **CI: QUIC targeted transport gets 40 min, not 30.** In the 40 green main
+  runs from 10-07 to 10-21, its Windows leg took 21.6 min at the median and
+  23.8 min at most. Branch run 39537367357 took 24.8 min, and run
+  37248467342 was cancelled at the 30-min cap.
+- **CI: the evented-canary advice no longer says to flip
+  `evented_available` when Evented compiles.** The Nightly notice
+  (`nightly.yml`, "Evented canary notice") said that a red canary means
+  "flip evented_available". But a compile does not prove that Evented
+  carries a socket: at Zig 0.17.0 both evented backends refuse listen,
+  accept and connect, Uring panics on `net_write`
+  (`lib/std/Io/Uring.zig:2120`), and Dispatch panics on `net_receive`,
+  `net_send`, `net_read` and `net_write` (`lib/std/Io/Dispatch.zig:1713-1716`).
+  The notice now says to keep the flag off, run a net_read behavior probe
+  on Linux and macOS, and flip the flag only when the probe passes. The
+  comments in `ci.yml` and `build/evented_canary.zig` say the same. Only
+  the fork's `build/stable` (`b98ef17f06`) compiles `std.Io.Evented`.
+  Upstream `0.17.x` dropped the old VTable fields (Uring in `6080247206`,
+  Dispatch in `ff08725400`), but those commits switch on
+  `Io.Operation.net_accept`, which only `master` has. So on `0.17.x` the
+  compile still fails, with `no member named 'net_accept'`. With that std
+  lib, `zig build check-evented-canary` goes red for this new error, not
+  for a fix.
+
 ### Fixed
 
 - **RPC and native: the host is no longer told to cancel a call that other
@@ -127,6 +181,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two new invariants: once the connection is closed, an accepted answer
   queues no effect; and after transport close, each owed answer is
   accepted once.
+
+### Documentation
+
+- `docs/upstream/handoff-quic-zig-tag-hardening.md` (new): it asks quic-zig
+  for a tag at `b0d7d78` or later that contains `021591e`, with CHANGELOG
+  and DOWNSTREAM-NOTE entries. It names the duplicate-ID scan in
+  `TransportParams.decode`, which a peer reaches before the application
+  knows who it is, and it says that nobody measured a DoS. capnp-zig stays
+  on quic-zig v0.38.0 in v0.29.0 and moves in its own release after the
+  tag exists.
+- `docs/upstream/README.md` is read again against upstream Zig `0.17.x`
+  and `master`, the fork's `build/stable`, and quic-zig `main` (2026-10-21).
+  The "Where fixed" column gives commits: upstream `0.17.x` fixes the
+  `Stream.read` and iOS `Io.Threaded` defects, and maps `LOCAL_DISCONNECT`
+  on Windows reads and writes; the fork fixes the evented compile,
+  `Stream.read`, SCM_RIGHTS and Unix address defects 1 and 2. Upstream
+  `0.17.x` does not fix the evented compile: it fails there with a new
+  error (`net_accept`). Two new rows record std workarounds with no
+  handoff: the raw `setsockopt` call and the Windows `TCP_NODELAY` no-op
+  in `setTcpNoDelay`. A new list names the four
+  handoffs to send, and says why the others need no message. The status
+  lines of seven handoff files changed to match.
+- `docs/downstreams.md`: capnp-swift pins v0.28.0 for its core (0.1.4 and
+  0.2.0), and 0.2.0 verified H13. New rows: tail-call results with
+  capabilities (deferred) and the cancel e2e scenario (open, P1-3). Two
+  relay texts for now give capnp-swift and capnp-deno a workaround for the
+  P0-1 defect (turn off cancel on the answer-finished event until v0.29.0),
+  because the owner held the v0.28.1 patch. Draft relay texts for v0.29.0
+  go to capnp-swift, capnp-deno (P0-1 and P1-1 affect its pin `fe6634d`)
+  and slcp-zig.
 
 ## [0.28.0] - 2026-10-21
 

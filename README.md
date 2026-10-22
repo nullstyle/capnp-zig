@@ -113,6 +113,10 @@ should use a tagged Zig 0.17 release.
 If you manage Zig with zvm, its PATH entry takes precedence over mise's shims —
 use `mise exec -- zig ...` to match CI exactly.
 
+CI's Linux jobs pin the runner image `ubuntu-24.04`. GitHub still updates
+that image, its kernel included; [CONTRIBUTING.md](CONTRIBUTING.md#toolchain)
+says what that can turn red.
+
 Repository generation and package checks use the Cap'n Proto **2.0-dev WASM
 compiler**, pinned by archive, module and manifest hashes in
 [`tools/capnp-toolchain.json`](tools/capnp-toolchain.json). Run
@@ -640,7 +644,7 @@ just act-bench
 Notes:
 - The repo `.actrc` maps all matrix runner labels to a Linux container image for local execution.
 - The default local container architecture is `linux/arm64` (override per command with `--container-architecture linux/amd64` if needed).
-- The repo `.actrc` and `just act-*` tasks pin matrix to `os:ubuntu-latest` for stable local runs.
+- The repo `.actrc` and `just act-*` tasks pin matrix to `os:ubuntu-24.04` (the label CI pins) for stable local runs.
 - Benchmark regression checks are excluded from `just act-ci` by default; run `just act-bench` when you explicitly want that signal.
 - Ensure Docker is running before invoking `act`.
 

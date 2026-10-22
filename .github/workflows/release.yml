@@ -24,10 +24,11 @@ permissions:
   # through the check-runs API.
   checks: read
 
+# ubuntu-24.04, as ci.yml pins it (see the comment above its jobs).
 jobs:
   audit:
     name: Audit tagged commit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
