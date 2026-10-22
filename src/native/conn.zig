@@ -613,7 +613,9 @@ pub const Conn = struct {
     /// flow so open questions can return. When none is left (or the drain
     /// timeout passes on a `tick`, ending the rest with RETURN{DISCONNECTED}),
     /// the Peer asks the host to close (CLOSE_REQUESTED). Idempotent. A
-    /// question held on a tail call counts as open (`bindingClose`).
+    /// question held on a tail call counts as open (`bindingClose`). That
+    /// CLOSE_REQUESTED is no close (`isClosed`): until `transportClosed`,
+    /// answers still go out, and calls still reach the host.
     pub fn shutdown(self: *Conn) void {
         if (self.isClosed() or self.shutting_down) return;
         self.shutting_down = true;
@@ -758,13 +760,14 @@ pub const Conn = struct {
     }
 
     /// An answer once the connection is closed (a protocol failure, a remote
-    /// Abort, or the transport is gone). Nothing more may be sent, and the
-    /// Peer must not replay the calls pipelined on the answer: it would hand
-    /// them to the host after CLOSE_REQUESTED. So the answer is consumed,
-    /// with no Return: the host owes nothing more for `answer_id`, and a
-    /// question held on it ends at transport close (`sweepOpenQuestions`).
-    /// `error.BadId` when the host does not owe it. The Peer frees its own
-    /// record of the call at deinit.
+    /// Abort, or the transport is gone; a graceful `shutdown` is no close).
+    /// Nothing more may be sent, and the Peer must not replay the calls
+    /// pipelined on the answer: it would hand them to the host after
+    /// CLOSE_REQUESTED. So the answer is consumed, with no Return: the host
+    /// owes nothing more for `answer_id`. A question held on it ends as an
+    /// open question does: at transport close (`sweepOpenQuestions`), or
+    /// earlier on a tick (`tickHeld`). `error.BadId` when the host does not
+    /// owe it. The Peer frees its own record of the call at deinit.
     fn dropAnswerOnceClosed(self: *Conn, answer_id: u32) error{BadId}!void {
         if (!self.pending_answers.contains(answer_id)) return error.BadId;
         self.removePendingAnswer(answer_id);

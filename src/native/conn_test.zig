@@ -1188,15 +1188,17 @@ test "remote abort: no Abort back, CLOSE_REQUESTED, error.Closed; open questions
 // ---------------------------------------------------------------------------
 
 /// What closes the connection before the host answers.
-const CloseCause = enum { remote_abort, protocol_failure };
+const CloseCause = enum { remote_abort, protocol_failure, transport_closed };
 
-/// Close `c` with a remote Abort (an orderly close: no Abort goes back), or
+/// Close `c` with a remote Abort (an orderly close: no Abort goes back),
 /// with a frame whose root pointer points past its segment (the Peer's
-/// Abort goes back). Either way CLOSE_REQUESTED is queued.
+/// Abort goes back), or with `transportClosed`. The first two queue
+/// CLOSE_REQUESTED; transport close queues none.
 fn closeBy(alloc: std.mem.Allocator, c: *Conn, cause: CloseCause) !void {
     // The Peer logs both at warn; here they are expected.
     testing.log_level = .err;
     switch (cause) {
+        .transport_closed => c.transportClosed(),
         .remote_abort => {
             var mb = protocol.MessageBuilder.init(alloc);
             defer mb.deinit();
@@ -1249,9 +1251,13 @@ fn expectAnswersAfterCloseQueueNothing(alloc: std.mem.Allocator, cause: CloseCau
 
     try closeBy(alloc, f.a, cause);
     try drainAll(f.a, &f.ra);
-    try testing.expectEqual(@as(usize, 1), f.ra.close_requested);
     const at_close = f.ra.order.items.len;
-    try testing.expectEqual(effects.Kind.close_requested, f.ra.order.items[at_close - 1]);
+    if (cause == .transport_closed) {
+        try testing.expectEqual(@as(usize, 0), f.ra.close_requested);
+    } else {
+        try testing.expectEqual(@as(usize, 1), f.ra.close_requested);
+        try testing.expectEqual(effects.Kind.close_requested, f.ra.order.items[at_close - 1]);
+    }
 
     const cap: Cap = .{ .kind = .@"export", .id = f.ea };
     var bad = false;
@@ -1265,7 +1271,7 @@ fn expectAnswersAfterCloseQueueNothing(alloc: std.mem.Allocator, cause: CloseCau
         };
         try drainAll(f.a, &f.ra);
         if (f.ra.order.items.len != at_close) {
-            std.debug.print("after a {s}, {s} answer {d}: {d} OUT_FRAME(s) and {d} INBOUND_CALL(s) after CLOSE_REQUESTED; want none\n", .{
+            std.debug.print("after a {s}, {s} answer {d}: {d} OUT_FRAME(s) and {d} INBOUND_CALL(s) after the close; want none\n", .{
                 @tagName(cause),                       @tagName(kind),                      id,
                 f.ra.frames.items.len - frames_before, f.ra.calls.items.len - calls_before,
             });
@@ -1300,6 +1306,61 @@ test "answers after close: after a protocol failure, each answer returns OK and 
     }
 }
 
+test "answers after close: after transport close alone, each answer returns OK and queues nothing" {
+    // Before, an answer here failed with error.TransportClosed
+    // (CAPNP_E_CLOSED) and the host still owed it.
+    for ([_]AnswerKind{ .results, .exception, .canceled }) |kind| {
+        try expectAnswersAfterCloseQueueNothing(testing.allocator, .transport_closed, kind);
+    }
+}
+
+test "answers after close: a graceful shutdown does not close; answers send until transport close" {
+    // With no questions of its own, `shutdown` queues CLOSE_REQUESTED at
+    // once, while the host still owes answers. That is no close: an answer
+    // still sends its Return, a call pipelined on it still reaches the
+    // host, and so does a new call from the remote. returnCanceled still
+    // needs ANSWER_FINISHED. Only transport close makes the answers no-ops.
+    const alloc = testing.allocator;
+    var f = try Finished.init(alloc, .{ .now_ns = 0, .answer_finished = true });
+    defer f.deinit();
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 30, f.ea));
+    try pushFrame(alloc, f.a, pipelinedCallFrame(alloc, 40, 30));
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 31, f.ea));
+    try pushFrame(alloc, f.a, finishFrame(alloc, 31));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 2), f.ra.calls.items.len);
+    try testing.expectEqual(@as(usize, 1), f.ra.countFinished(31));
+
+    f.a.shutdown();
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), f.ra.close_requested);
+
+    const cap: Cap = .{ .kind = .@"export", .id = f.ea };
+    try answerWith(alloc, f.a, 30, .results, cap);
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 30, .results));
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 40));
+    try pushFrame(alloc, f.a, plainCallFrame(alloc, 32, f.ea));
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), countCalls(&f.ra, 32));
+    try testing.expectError(error.Invalid, f.a.returnCanceled(32));
+    try answerWith(alloc, f.a, 31, .canceled, cap);
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(@as(usize, 1), try countReturnFrames(&f.ra, 31, .canceled));
+
+    // The transport closes. The answers still owed (40 and 32) send nothing.
+    f.a.transportClosed();
+    try drainAll(f.a, &f.ra);
+    const at_close = f.ra.order.items.len;
+    try answerWith(alloc, f.a, 40, .exception, cap);
+    try answerWith(alloc, f.a, 32, .canceled, cap);
+    try drainAll(f.a, &f.ra);
+    try testing.expectEqual(at_close, f.ra.order.items.len);
+    for ([_]u32{ 30, 31, 32, 40 }) |id| {
+        try testing.expectError(error.BadId, answerWith(alloc, f.a, id, .results, cap));
+    }
+}
+
 test "answers after close: a question held on the answered call still ends once, DISCONNECTED, at transport close" {
     // A question of the host's is held on call 77, a tail call the host
     // owes. A remote Abort closes the connection, then the host answers 77.
@@ -1325,6 +1386,49 @@ test "answers after close: a question held on the answered call still ends once,
         try drainAll(p.a, &p.ra);
         const r = try expectOneReturn(&p.ra, t.q, .disconnected);
         try testing.expectEqualStrings("server shutting down", r.reason);
+    }
+}
+
+test "answers after close: a tick can end a held question before transport close, once" {
+    // Closed, the host's late answer to the tail call ends nothing. A tick
+    // still ends the held question, as while open: at its deadline (RETURN
+    // EXCEPTION overloaded), or at the shutdown drain bound when `shutdown`
+    // came before the close (RETURN DISCONNECTED). Transport close then adds
+    // no second RETURN.
+    const alloc = testing.allocator;
+    const ms = std.time.ns_per_ms;
+    const Bound = enum { deadline, drain };
+    for ([_]Bound{ .deadline, .drain }) |bound| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0, .timeouts = .{ .shutdown_drain_timeout_ms = 100 } });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try pushPendingTailCall(alloc, p.a, &p.ra, t, t.q, tail_answer);
+        switch (bound) {
+            .deadline => try p.a.setDeadline(t.q, 10),
+            .drain => p.a.shutdown(),
+        }
+        try closeBy(alloc, p.a, .remote_abort);
+        try drainAll(p.a, &p.ra);
+
+        try answerWith(alloc, p.a, tail_answer, .results, .{ .kind = .none });
+        try drainAll(p.a, &p.ra);
+        try expectNoReturnYet(&p.ra, t.q);
+
+        try testing.expectEqual(@as(usize, 1), p.a.tick(150 * ms));
+        try drainAll(p.a, &p.ra);
+        const r = switch (bound) {
+            .deadline => try expectOneReturn(&p.ra, t.q, .exception),
+            .drain => try expectOneReturn(&p.ra, t.q, .disconnected),
+        };
+        // A DISCONNECTED after a remote Abort carries the Abort's reason.
+        try testing.expectEqualStrings(switch (bound) {
+            .deadline => capnp.rpc.peer.deadline_reason,
+            .drain => "server shutting down",
+        }, r.reason);
+
+        p.a.transportClosed();
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), p.ra.countReturns(t.q));
     }
 }
 

@@ -79,22 +79,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capnp_return_canceled` had no closed check. After a protocol failure or
   a remote Abort, an answer still queued its Return OUT_FRAME after the
   Abort. A call pipelined on the answer then replayed, and reached the host
-  as a new INBOUND_CALL after CLOSE_REQUESTED. Now, once the connection is
-  closed (a protocol failure, a remote Abort, or
-  `capnp_conn_transport_closed`), the three functions are no-ops, as
-  `capnp_cancel`, `capnp_finish` and `capnp_release` already were. For an
-  answer the host owes, each one returns `CAPNP_OK` and sends nothing, and
-  the host owes that answer no more. For any other id, each one returns
-  `CAPNP_E_BAD_ID`. So `capnp_return_canceled` no longer returns
-  `CAPNP_E_INVAL` after the close: it needs no ANSWER_FINISHED then. A
-  question held on the call (a tail call) no longer gets that late answer.
-  It ends at transport close with RETURN DISCONNECTED, as every open
-  question does. "After close" in docs/native-abi.md has the rule. The
-  `Conn` functions (`returnResults`, `returnException`, `returnCanceled`)
-  behave the same. Tests: the three "answers after close: ..." tests in
-  `src/native/conn_test.zig`, and the C-level one in
-  `src/native/abi_test.zig`. `fuzz-native-abi` checks a new invariant:
-  after a refused push, an accepted answer queues no effect.
+  as a new INBOUND_CALL after CLOSE_REQUESTED. After
+  `capnp_conn_transport_closed`, an answer returned `CAPNP_E_CLOSED`, and
+  the host still owed it. Now, once the connection is closed (a protocol
+  failure, a remote Abort, or `capnp_conn_transport_closed`), the three
+  functions are no-ops, as `capnp_cancel`, `capnp_finish`,
+  `capnp_release`, `capnp_resolve_promise` and `capnp_reject_promise`
+  already were. For an answer the host owes, each one returns `CAPNP_OK`
+  and sends nothing, and the host owes that answer no more. For any other
+  id, each one returns `CAPNP_E_BAD_ID`. So two return codes change once
+  closed. `capnp_return_canceled` returns `CAPNP_OK` where it returned
+  `CAPNP_E_INVAL`: it needs no ANSWER_FINISHED then. And after
+  `capnp_conn_transport_closed`, all three return `CAPNP_OK` where they
+  returned `CAPNP_E_CLOSED`. A question held on the call (a tail call) no
+  longer gets that late answer. It ends as an open question does: at
+  transport close with RETURN DISCONNECTED, or earlier on a tick, at its
+  deadline or at the shutdown drain bound. A graceful
+  `capnp_conn_shutdown` is no close, as before: after its CLOSE_REQUESTED
+  and until `capnp_conn_transport_closed`, answers still go out and calls
+  still reach the host. "After close" in docs/native-abi.md has the rule.
+  The `Conn` functions (`returnResults`, `returnException`,
+  `returnCanceled`) behave the same. Tests: the "answers after close: ..."
+  tests in `src/native/conn_test.zig` (a remote Abort, a protocol failure,
+  a transport close alone, a graceful shutdown, and held questions), and
+  the C-level one in `src/native/abi_test.zig`. `fuzz-native-abi` checks
+  two new invariants: once the connection is closed, an accepted answer
+  queues no effect; and after transport close, each owed answer is
+  accepted once.
 
 ## [0.28.0] - 2026-10-21
 

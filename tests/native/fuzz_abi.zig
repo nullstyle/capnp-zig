@@ -36,8 +36,11 @@
 //!   - ANSWER_FINISHED (H13) comes only to a side that opted in, for an
 //!     answer the host still owes, at most once per INBOUND_CALL, and
 //!     `capnp_return_canceled` succeeds only for an answer it reported,
-//!     or once the side may be closed (a refused push or CLOSE_REQUESTED);
-//!   - after a refused push, an accepted answer queues no effect;
+//!     or once the connection is closed;
+//!   - once the connection is closed (a protocol failure, a remote Abort,
+//!     or `transport_closed`), an accepted answer queues no effect, and
+//!     after `transport_closed` every owed answer is accepted once
+//!     (`CAPNP_OK`, then `CAPNP_E_BAD_ID`);
 //!   - in a clean session, ANSWER_FINISHED never comes for an answer that
 //!     the other side still has a call pipelined on (an open question whose
 //!     target is that question, with no Return for it in flight);
@@ -145,6 +148,8 @@ const Fuzz = struct {
     calls_seen: usize = 0,
     finished_seen: usize = 0,
     canceled_answers: usize = 0,
+    /// Answers accepted once the connection was closed.
+    closed_answers: usize = 0,
 
     fn fail(self: *Fuzz, comptime what: []const u8, args: anytype) error{Violation} {
         std.debug.print("fuzz-abi: VIOLATION (seed {d}, session {d}, step {d}): " ++ what ++ "\n", .{ self.seed, self.sessions, self.step } ++ args);
@@ -428,15 +433,16 @@ const Fuzz = struct {
             15 => _ = abi.capnp_reject_promise(conn, self.pickOrRandom(side.promises.items), "fuzz", 4),
             16, 17, 18 => {
                 const answer = self.pickOrRandom(side.answers.items);
+                const was_closed = isClosed(conn);
                 if (self.rand.boolean()) {
                     var caps_buf: [2]Cap = undefined;
                     const ncaps = self.rand.uintLessThan(usize, 3);
                     for (caps_buf[0..ncaps]) |*cap| cap.* = self.randomCap(side);
                     const results = try self.randomPayload(ncaps);
                     defer self.a.free(results);
-                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) try self.accepted(side, answer);
+                    if (abi.capnp_return_results(conn, answer, results.ptr, results.len, if (ncaps == 0) null else &caps_buf, ncaps) == abi.CAPNP_OK) try self.accepted(side, answer, was_closed);
                 } else {
-                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) try self.accepted(side, answer);
+                    if (abi.capnp_return_exception(conn, answer, self.rand.int(u16) % 5, "boom", 4) == abi.CAPNP_OK) try self.accepted(side, answer, was_closed);
                 }
             },
             19 => _ = abi.capnp_conn_tick(conn, @intCast(self.step * 7_000_000)),
@@ -471,15 +477,13 @@ const Fuzz = struct {
                     keys[n] = k.*;
                 }
                 const answer = if (n > 0 and self.rand.boolean()) keys[self.rand.uintLessThan(usize, n)] else self.pickOrRandom(side.answers.items);
+                const was_closed = isClosed(conn);
                 if (abi.capnp_return_canceled(conn, answer) == abi.CAPNP_OK) {
                     // Once closed, every owed answer is consumed, with or
-                    // without ANSWER_FINISHED. The host learns of the close
-                    // from a refused push or a CLOSE_REQUESTED. A graceful
-                    // shutdown also queues CLOSE_REQUESTED, so after one
-                    // this check is loose.
-                    const maybe_closed = side.closed or side.close_requested != 0;
-                    if (!side.finished.contains(answer) and !maybe_closed) return self.fail("capnp_return_canceled({d}) OK without ANSWER_FINISHED", .{answer});
-                    try self.accepted(side, answer);
+                    // without ANSWER_FINISHED. A graceful shutdown's
+                    // CLOSE_REQUESTED is no close.
+                    if (!side.finished.contains(answer) and !was_closed) return self.fail("capnp_return_canceled({d}) OK without ANSWER_FINISHED", .{answer});
+                    try self.accepted(side, answer, was_closed);
                     self.canceled_answers += 1;
                 }
             },
@@ -488,18 +492,50 @@ const Fuzz = struct {
         try self.drainAll(side);
     }
 
-    /// The host's answer for `id` was accepted. After a refused push the
-    /// connection is closed, so the answer must queue nothing: no Return
-    /// after the Abort, and no pipelined call replayed to the host.
-    fn accepted(self: *Fuzz, side: *Side, id: u32) !void {
-        if (side.closed) {
+    /// The host's answer for `id` was accepted. When the connection was
+    /// closed before the answer (`was_closed`), the answer must queue
+    /// nothing: no Return after the Abort, and no pipelined call replayed to
+    /// the host. Every op drains its side, so the queue was empty before.
+    fn accepted(self: *Fuzz, side: *Side, id: u32, was_closed: bool) !void {
+        if (was_closed) {
             const conn = side.conn orelse return;
             var e: abi.capnp_effect = std.mem.zeroes(abi.capnp_effect);
             e.struct_size = effectSize();
             const rc = abi.capnp_conn_next_effect(conn, &e);
             if (rc != 0) return self.fail("an answer to {d} after close queued effect kind {d} (next_effect {d})", .{ id, e.kind, rc });
+            self.closed_answers += 1;
         }
         answered(side, id);
+    }
+
+    /// The connection is closed (a protocol failure, a remote Abort, or
+    /// `transport_closed`): an empty push is refused with CAPNP_E_CLOSED
+    /// exactly then, and does nothing otherwise. A graceful shutdown is no
+    /// close.
+    fn isClosed(conn: *conn_t) bool {
+        return abi.capnp_conn_push_bytes(conn, null, 0) == abi.CAPNP_E_CLOSED;
+    }
+
+    /// After `transport_closed`: each answer `side` still owes is accepted
+    /// once (`CAPNP_OK`, no effect), and a second answer is `CAPNP_E_BAD_ID`.
+    fn answerAllAfterClose(self: *Fuzz, side: *Side, conn: *conn_t) !void {
+        var mb = message.MessageBuilder.init(self.a);
+        defer mb.deinit();
+        (try mb.allocateStruct(1, 0)).writeU64(0, 1);
+        const results = try mb.toBytes();
+        defer self.a.free(results);
+        while (side.answers.items.len > 0) {
+            const id = side.answers.items[side.answers.items.len - 1];
+            const kind = self.rand.uintLessThan(u8, 3);
+            const rc = switch (kind) {
+                0 => abi.capnp_return_results(conn, id, results.ptr, results.len, null, 0),
+                1 => abi.capnp_return_exception(conn, id, 0, "late", 4),
+                else => abi.capnp_return_canceled(conn, id),
+            };
+            if (rc != abi.CAPNP_OK) return self.fail("answer {d} (kind {d}) after transport_closed returned {d}; want CAPNP_OK", .{ id, kind, rc });
+            try self.accepted(side, id, true);
+            if (abi.capnp_return_canceled(conn, id) != abi.CAPNP_E_BAD_ID) return self.fail("a second answer to {d} after transport_closed was not CAPNP_E_BAD_ID", .{id});
+        }
     }
 
     /// Forget the answer for `id`: the host owes it no more.
@@ -575,6 +611,8 @@ const Fuzz = struct {
                 abi.capnp_conn_transport_closed(cn);
                 try self.drainAll(s);
                 if (s.open.count() != 0) return self.fail("{d} question(s) still open after transport_closed", .{s.open.count()});
+                if (!isClosed(cn)) return self.fail("an empty push after transport_closed was not CAPNP_E_CLOSED", .{});
+                try self.answerAllAfterClose(s, cn);
                 // Everything after close is a no-op or CLOSED, never a crash.
                 var qid: u32 = 0;
                 _ = abi.capnp_bootstrap(cn, &qid);
@@ -681,7 +719,7 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("fuzz-abi: {d} s, {d} sessions, {d} ops, {d} frames, {d} returns, {d} protocol failures, {d} BUSY checks\n", .{ elapsed / std.time.ns_per_s, fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen });
         }
     }
-    std.debug.print("fuzz-abi: OK: {d} sessions, {d} ops, {d} frames pushed, {d} returns, {d} protocol failures, {d} BUSY checks, {d} INBOUND_CALL, {d} ANSWER_FINISHED, {d} canceled answers, peak {d} bytes live, 0 live now\n", .{ fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen, fuzz.calls_seen, fuzz.finished_seen, fuzz.canceled_answers, counting.peak });
+    std.debug.print("fuzz-abi: OK: {d} sessions, {d} ops, {d} frames pushed, {d} returns, {d} protocol failures, {d} BUSY checks, {d} INBOUND_CALL, {d} ANSWER_FINISHED, {d} canceled answers, {d} answers after close, peak {d} bytes live, 0 live now\n", .{ fuzz.sessions, fuzz.ops, fuzz.frames_pushed, fuzz.returns, fuzz.protocol_fails, fuzz.busy_seen, fuzz.calls_seen, fuzz.finished_seen, fuzz.canceled_answers, fuzz.closed_answers, counting.peak });
     if (counting.live != 0) {
         std.debug.print("fuzz-abi: FAIL: {d} live bytes at exit\n", .{counting.live});
         std.process.exit(1);

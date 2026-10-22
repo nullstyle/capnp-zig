@@ -110,11 +110,30 @@ no-ops, as `capnp_cancel`, `capnp_finish`, `capnp_release`,
   nothing. The host owes that answer no more. `capnp_return_canceled` needs
   no ANSWER_FINISHED then.
 - For an answer the host does not owe, each one returns `CAPNP_E_BAD_ID`.
+- The argument checks still apply. For example, a NULL or empty `msg` is
+  `CAPNP_E_INVAL`, and the host still owes the answer.
 - No call that is pipelined on the answer reaches the host.
-- A question held on the call ("Tail calls") still ends at transport close,
-  with RETURN DISCONNECTED.
+- A question held on the call ("Tail calls") does not get the late answer.
+  It ends as an open question does: at transport close with RETURN
+  DISCONNECTED, or earlier on a tick, at its deadline or at the shutdown
+  drain bound.
 
-So a late answer from a handler that started before the close is safe.
+So after a protocol failure, a remote Abort or a transport close, a late
+answer from a handler that started before the close is safe.
+
+A graceful `capnp_conn_shutdown` does not close the connection, not even
+after its CLOSE_REQUESTED. The core queues that CLOSE_REQUESTED when its own
+questions are done, also while the host still owes answers. Until
+`capnp_conn_transport_closed`:
+
+- An answer still sends its Return.
+- A call pipelined on that answer still reaches the host as an
+  INBOUND_CALL.
+- A call in the bytes that the host pushes still reaches the host.
+- `capnp_return_canceled` still needs an ANSWER_FINISHED.
+
+A host that wants no late answers in that window calls
+`capnp_conn_transport_closed` when it acts on CLOSE_REQUESTED.
 
 ## Answer finished
 
@@ -155,6 +174,10 @@ exception RETURN OUT_FRAME, as the C++ reference does, and the host never
 sees it. So it never waits on the answer, and after ANSWER_FINISHED,
 `capnp_return_canceled` still answers.
 
+These `CAPNP_E_INVAL` cases apply while the connection is open. Once it is
+closed, `capnp_return_canceled` accepts every answer the host owes, with or
+without ANSWER_FINISHED ("After close" in "Answer ids").
+
 **Drain order.** Apply effects in drain order. An ANSWER_FINISHED can be
 stale: the host answered the call after the Finish came, but before it
 drained the effect. The effect then comes before that answer's Return
@@ -176,11 +199,11 @@ call.
 **When no effect comes.** The core reports a Finish only when it can record
 it. The records are bounded by `max_active_inbound_questions`. When they are
 full, or when the record cannot get memory, no ANSWER_FINISHED comes,
-`capnp_return_canceled` returns `CAPNP_E_INVAL`, and the host's ordinary
-answer goes out. The bound on owed answers ("Answer ids") does not keep a
-record free for each of them: other inbound calls use the same records. A
-call that the core still holds queued (on a promise export, or on an
-answer) takes one when the remote finishes it with
+`capnp_return_canceled` returns `CAPNP_E_INVAL` while the connection is
+open, and the host's ordinary answer goes out. The bound on owed answers
+("Answer ids") does not keep a record free for each of them: other inbound
+calls use the same records. A call that the core still holds queued (on
+a promise export, or on an answer) takes one when the remote finishes it with
 `requireEarlyCancellationWorkaround` set. It keeps that record until a
 Return for the call goes out: the host's answer after the core delivers the
 call, or the core's own exception Return (for example, when the promise is
@@ -377,7 +400,8 @@ lists. Zig code can skip the C ABI and use `native.conn.Conn` directly.
   random operation sequences and checks its invariants (one RETURN per
   question, well-formed payloads, no INBOUND_CALL for an id the host still
   owes, ANSWER_FINISHED only as described above, no effect from an answer
-  after a refused push, 0 live bytes after free).
+  once the connection is closed, every owed answer accepted once after
+  transport close, 0 live bytes after free).
   One session in 4 is clean: no junk bytes and no forged capability kinds,
   so calls reach the hosts, through promise exports and PROMISED
   capabilities too. A seeded

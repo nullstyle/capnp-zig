@@ -273,7 +273,8 @@ int32_t capnp_conn_tick(capnp_conn *conn, int64_t now_uptime_ns);
 
 /* The host's transport is gone. Every open question ends with one RETURN
  * DISCONNECTED, queued before this returns. Idempotent. After it, calls
- * return CAPNP_E_CLOSED and capnp_finish / capnp_release are no-ops. */
+ * return CAPNP_E_CLOSED, and capnp_finish, capnp_release and the three
+ * answer functions are no-ops (see capnp_return_results). */
 void capnp_conn_transport_closed(capnp_conn *conn);
 
 /* Take the last connection-level error (set by a protocol failure, a remote
@@ -326,7 +327,10 @@ int32_t capnp_set_deadline(capnp_conn *conn, uint32_t qid, uint32_t timeout_ms);
 /* Begin a graceful shutdown: new calls fail with CAPNP_E_CLOSED, while input
  * and ticks keep flowing so open questions can return. When none is left, or
  * when shutdown_drain_timeout_ms passes on a tick (the rest end with RETURN
- * DISCONNECTED), the core queues CLOSE_REQUESTED. Idempotent. */
+ * DISCONNECTED), the core queues CLOSE_REQUESTED. Idempotent. That
+ * CLOSE_REQUESTED does not close the connection: until
+ * capnp_conn_transport_closed, answers still go out, and calls still reach
+ * the host as INBOUND_CALLs. */
 void capnp_conn_shutdown(capnp_conn *conn);
 
 /* Finish a returned question (the host dropped its last handle on it).
@@ -362,19 +366,23 @@ int32_t capnp_promise_export(capnp_conn *conn, uint32_t *out_promise_id);
 int32_t capnp_resolve_promise(capnp_conn *conn, uint32_t promise_id, capnp_cap to);
 
 /* Reject promise export promise_id: callers see an exception (type failed; a
- * typed rejection needs capnp-zig handoff H5). reason is not NUL-terminated. */
+ * typed rejection needs capnp-zig handoff H5). reason is not NUL-terminated.
+ * A no-op once the connection is closed. */
 int32_t capnp_reject_promise(capnp_conn *conn, uint32_t promise_id, const char *reason, size_t reason_len);
 
 /* Answer an INBOUND_CALL (answer_id = its id) with results: msg and caps as
  * for capnp_call. CAPNP_E_BAD_ID for an answer the host does not owe. An
- * answer after the remote's Finish of the call is still accepted, once. On a
- * refused payload (a bad caps[] entry) or a failed send nothing is sent and
- * the answer stays owed. The host answers each INBOUND_CALL once: after that
- * the remote may reuse the id at once, and a second answer then goes to the
- * new call. A no-op once the connection is closed (a protocol failure, a
- * remote Abort, or the transport is gone): for an answer the host owes it
- * returns CAPNP_OK and sends nothing, the host owes that answer no more, and
- * no call pipelined on it reaches the host. */
+ * answer after the remote's Finish of the call is still accepted, once. While
+ * the connection is open, on a refused payload (a bad caps[] entry) or a
+ * failed send nothing is sent and the answer stays owed. The host answers
+ * each INBOUND_CALL once: after that the remote may reuse the id at once, and
+ * a second answer then goes to the new call. Once the connection is closed (a
+ * protocol failure, a remote Abort, or capnp_conn_transport_closed; a
+ * graceful capnp_conn_shutdown is no close), this is a no-op past its
+ * argument checks (CAPNP_E_INVAL for a NULL or empty msg, or a malformed
+ * caps[] entry): for an answer the host owes it returns CAPNP_OK and sends
+ * nothing, the host owes that answer no more, and no call pipelined on it
+ * reaches the host. */
 int32_t capnp_return_results(capnp_conn *conn, uint32_t answer_id, const uint8_t *msg, size_t msg_len,
                              const capnp_cap *caps, size_t ncaps);
 

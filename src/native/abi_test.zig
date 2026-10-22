@@ -773,45 +773,64 @@ test "take_error: a malformed frame is PROTOCOL with the cause; a remote Abort i
 }
 
 test "answers after close: each answer function consumes its answer with CAPNP_OK and queues nothing" {
-    // A remote Abort closes the callee while it owes three calls. Each
-    // answer function then returns CAPNP_OK and sends nothing (also
-    // capnp_return_canceled, which needs no ANSWER_FINISHED once closed). A
-    // second answer, or one for an id never owed, is CAPNP_E_BAD_ID.
+    // A remote Abort, or capnp_conn_transport_closed alone, closes the
+    // callee while it owes three calls. Each answer function then returns
+    // CAPNP_OK and sends nothing (also capnp_return_canceled, which needs no
+    // ANSWER_FINISHED once closed). Before, after transport close alone,
+    // each one returned CAPNP_E_CLOSED and the answer stayed owed. A second
+    // answer, or one for an id never owed, is CAPNP_E_BAD_ID. The promise
+    // functions are no-ops too.
     const a = testing.allocator;
-    var sa = try newSide(a);
-    defer sa.deinit();
-    var sb = try newSide(a);
-    defer sb.deinit();
-    const ib = try connectPair(&sa, &sb, 100);
-    const p = try msgU64(a, 1);
-    defer a.free(p);
-    for (0..3) |m| _ = try call(&sa, ib, @intCast(m), p, &.{});
-    try pump(&sa, &sb);
-    try testing.expectEqual(@as(usize, 3), sb.calls.items.len);
+    for ([_]bool{ false, true }) |by_transport| {
+        var sa = try newSide(a);
+        defer sa.deinit();
+        var sb = try newSide(a);
+        defer sb.deinit();
+        const ib = try connectPair(&sa, &sb, 100);
+        const p = try msgU64(a, 1);
+        defer a.free(p);
+        var promises: [2]u32 = undefined;
+        for (&promises) |*id| try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_promise_export(sb.conn, id));
+        var eb: u32 = 0;
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_export(sb.conn, 7, &eb));
+        for (0..3) |m| _ = try call(&sa, ib, @intCast(m), p, &.{});
+        try pump(&sa, &sb);
+        try testing.expectEqual(@as(usize, 3), sb.calls.items.len);
 
-    const abort = blk: {
-        var mb = protocol.MessageBuilder.init(a);
-        defer mb.deinit();
-        try mb.buildAbort("server shutting down");
-        break :blk try mb.finish();
-    };
-    defer a.free(abort);
-    testing.log_level = .err;
-    try testing.expectEqual(@as(i32, c.CAPNP_E_CLOSED), c.capnp_conn_push_bytes(sb.conn, abort.ptr, abort.len));
-    try drainAll(&sb);
-    try testing.expectEqual(@as(usize, 1), sb.close_requested);
-    const at_close = sb.kinds.items.len;
+        if (by_transport) {
+            c.capnp_conn_transport_closed(sb.conn);
+            try drainAll(&sb);
+            try testing.expectEqual(@as(usize, 0), sb.close_requested);
+        } else {
+            const abort = blk: {
+                var mb = protocol.MessageBuilder.init(a);
+                defer mb.deinit();
+                try mb.buildAbort("server shutting down");
+                break :blk try mb.finish();
+            };
+            defer a.free(abort);
+            testing.log_level = .err;
+            try testing.expectEqual(@as(i32, c.CAPNP_E_CLOSED), c.capnp_conn_push_bytes(sb.conn, abort.ptr, abort.len));
+            try drainAll(&sb);
+            try testing.expectEqual(@as(usize, 1), sb.close_requested);
+        }
+        const at_close = sb.kinds.items.len;
 
-    const ids = [_]u32{ sb.calls.items[0].answer_id, sb.calls.items[1].answer_id, sb.calls.items[2].answer_id };
-    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ids[0], p.ptr, p.len, null, 0));
-    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_exception(sb.conn, ids[1], 0, "late", 4));
-    try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_canceled(sb.conn, ids[2]));
-    try drainAll(&sb);
-    try testing.expectEqual(at_close, sb.kinds.items.len);
-    for (ids ++ [_]u32{999}) |id| {
-        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_results(sb.conn, id, p.ptr, p.len, null, 0));
-        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_exception(sb.conn, id, 0, "late", 4));
-        try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, id));
+        const ids = [_]u32{ sb.calls.items[0].answer_id, sb.calls.items[1].answer_id, sb.calls.items[2].answer_id };
+        // The argument checks still apply, and the answer stays owed.
+        try testing.expectEqual(@as(i32, c.CAPNP_E_INVAL), c.capnp_return_results(sb.conn, ids[0], null, 0, null, 0));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_results(sb.conn, ids[0], p.ptr, p.len, null, 0));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_exception(sb.conn, ids[1], 0, "late", 4));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_return_canceled(sb.conn, ids[2]));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_reject_promise(sb.conn, promises[0], "late", 4));
+        try testing.expectEqual(@as(i32, c.CAPNP_OK), c.capnp_resolve_promise(sb.conn, promises[1], cap(c.CAPNP_CAP_EXPORT, eb)));
+        try drainAll(&sb);
+        try testing.expectEqual(at_close, sb.kinds.items.len);
+        for (ids ++ [_]u32{999}) |id| {
+            try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_results(sb.conn, id, p.ptr, p.len, null, 0));
+            try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_exception(sb.conn, id, 0, "late", 4));
+            try testing.expectEqual(@as(i32, c.CAPNP_E_BAD_ID), c.capnp_return_canceled(sb.conn, id));
+        }
     }
 }
 
