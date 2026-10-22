@@ -2135,6 +2135,121 @@ test "answer cancellation: no event while a call is pipelined on the answer; sen
     ));
 }
 
+test "answer cancellation: with go-capnp's Finish flags, the event comes once the caller finished the answer and the call pipelined on it" {
+    // go-capnp sends requireEarlyCancellationWorkaround = true (the schema
+    // default), so the peer keeps the finished call 40 queued on host call
+    // 30. Once the caller has finished 30 and every call pipelined on it, no
+    // call waits for 30's results: one kind-4 event comes, in either Finish
+    // order, and sendReturnCanceled gives 30 and 40 one Return each. The
+    // caller may then reuse id 40.
+    for ([_]bool{ true, false }) |pipelined_call_finished_first| {
+        abi.capnp_clear_error();
+        defer abi.capnp_clear_error();
+
+        const server = abi.capnp_peer_new();
+        defer abi.capnp_peer_free(server);
+        try std.testing.expect(server != 0);
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_answer_finished_handler(server, 1));
+
+        const pending = try queuePendingHostCall(std.testing.allocator, server, 30, 0xA100, 3);
+        defer {
+            std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+                server,
+                pending.frame_ptr,
+                pending.frame_len,
+            )) catch unreachable;
+        }
+        const pipelined = try encodePipelinedCallFrame(std.testing.allocator, 40, pending.question_id);
+        defer std.testing.allocator.free(pipelined);
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+            server,
+            toAbiPtr(pipelined.ptr),
+            @intCast(pipelined.len),
+        ));
+
+        var event_ptr: abi.AbiPtr = 0;
+        var event_len: u32 = 0;
+        const first: u32 = if (pipelined_call_finished_first) 40 else pending.question_id;
+        const second: u32 = if (pipelined_call_finished_first) pending.question_id else 40;
+        for ([_]u32{ first, second }, 0..) |id, i| {
+            const finish = try encodeFinishFrameWith(std.testing.allocator, id, false, true);
+            defer std.testing.allocator.free(finish);
+            try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+                server,
+                toAbiPtr(finish.ptr),
+                @intCast(finish.len),
+            ));
+            // After the first Finish, 40 still waits for 30's results.
+            if (i == 0) try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
+                server,
+                toAbiPtr(&event_ptr),
+                toAbiPtr(&event_len),
+            ));
+        }
+        try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(server));
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_l3_event(
+            server,
+            toAbiPtr(&event_ptr),
+            toAbiPtr(&event_len),
+        ));
+        const event = AbiBuffer{ .ptr = event_ptr, .len = event_len };
+        defer event.free();
+        try std.testing.expectEqual(@as(u32, 4), readAbiInt(u32, event.ptr));
+        try std.testing.expectEqual(pending.question_id, readAbiInt(u32, event.ptr + 4));
+        try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_pop_l3_event(
+            server,
+            toAbiPtr(&event_ptr),
+            toAbiPtr(&event_len),
+        ));
+
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_send_return_canceled(server, pending.question_id));
+        try std.testing.expectEqual(@as(u32, 2), abi.capnp_peer_outbound_count(server));
+        var canceled: usize = 0;
+        var failed: usize = 0;
+        for (0..2) |_| {
+            const frame = try popOutFrameCopy(std.testing.allocator, server);
+            defer std.testing.allocator.free(frame);
+            var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+            defer decoded.deinit();
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == pending.question_id and ret.tag == .canceled) canceled += 1;
+            if (ret.answer_id == 40 and ret.tag == .exception) failed += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), canceled);
+        try std.testing.expectEqual(@as(usize, 1), failed);
+
+        // The caller has a Return for 40 and finished it: it reuses the id,
+        // and the call reaches the host.
+        var call_builder = protocol.MessageBuilder.init(std.testing.allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(40, 0xA100, 3);
+        try call.setTargetImportedCap(pending.bootstrap_export_id);
+        _ = try call.initCapTableTyped(0);
+        const reuse = try call_builder.finish();
+        defer std.testing.allocator.free(reuse);
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+            server,
+            toAbiPtr(reuse.ptr),
+            @intCast(reuse.len),
+        ));
+        var call_q: u32 = 0;
+        var call_iface: u64 = 0;
+        var call_method: u16 = 0;
+        var call_ptr: abi.AbiPtr = 0;
+        var call_len: u32 = 0;
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_host_call(
+            server,
+            toAbiPtr(&call_q),
+            toAbiPtr(&call_iface),
+            toAbiPtr(&call_method),
+            toAbiPtr(&call_ptr),
+            toAbiPtr(&call_len),
+        ));
+        try std.testing.expectEqual(@as(u32, 40), call_q);
+        try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(server, call_ptr, call_len));
+    }
+}
+
 test "known limit: HostPeer fails a call pipelined on a host call that the host answers with a results frame" {
     // "HostPeer fails a call that is pipelined on an unanswered host call"
     // in docs/supported-surface.md, with no Finish at all. While this test
@@ -2323,8 +2438,19 @@ fn encodeReturnResultsFrameWithCap(allocator: std.mem.Allocator, answer_id: u32,
 
 /// A Finish frame for `question_id`.
 fn encodeFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_result_caps: bool) ![]const u8 {
+    return encodeFinishFrameWith(allocator, question_id, release_result_caps, false);
+}
+
+/// A Finish frame for `question_id`, with `requireEarlyCancellationWorkaround`
+/// as given (the schema default, and what go-capnp sends, is true).
+fn encodeFinishFrameWith(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    release_result_caps: bool,
+    require_early_cancellation: bool,
+) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
-    try builder.buildFinish(question_id, release_result_caps, false);
+    try builder.buildFinish(question_id, release_result_caps, require_early_cancellation);
     return builder.finish();
 }

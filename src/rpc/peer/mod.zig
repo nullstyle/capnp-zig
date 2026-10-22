@@ -4836,6 +4836,14 @@ pub const Peer = struct {
         {
             self.finished_early_param_grants.put(qid, {}) catch |err| self.reportNonfatalError(err);
         }
+        // The answer that this call is queued on, pipelined, if the host may
+        // have to be told about that answer's Finish once this call goes
+        // (`reportFinishedAnswerOnceUnwanted`, after this Finish is applied).
+        // Found before the cancel below takes the call out of the queue.
+        const queued_on_answer: ?u32 = if (was_active and self.answer_finished_fn != null)
+            self.answerQueuedOn(qid)
+        else
+            null;
         if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
             // deliverable, cancel the queued call immediately.
@@ -4891,10 +4899,11 @@ pub const Peer = struct {
         // reached the host. With no tombstone (the bounded map was full) the
         // peer no longer tracks the owed Return, so the host is not told:
         // `sendReturnCanceled` would refuse the id. Calls pipelined on the
-        // answer still need its results (rpc.capnp, Finish: cancel only
-        // when nothing else cares about the result), so the host is not told
-        // either, and it is not told later when they go: the host's ordinary
-        // Return answers the call.
+        // answer that the caller has not finished still need its results
+        // (rpc.capnp, Finish: cancel only when nothing else cares about the
+        // result), so the host is not told either. It is told when the last
+        // of them goes (below, at that call's Finish), if it still owes the
+        // Return then.
         if (host_owes_return and !canceled_automatic_target and
             !self.hasCallsPipelinedOnAnswer(qid) and
             self.hostOwesFinishedReturn(qid))
@@ -4903,6 +4912,37 @@ pub const Peer = struct {
                 if (self.answer_finished_ctx) |ctx| notify(ctx, self, qid, finish_msg.release_result_caps);
             }
         }
+        if (queued_on_answer) |answer_id| self.reportFinishedAnswerOnceUnwanted(answer_id);
+    }
+
+    /// The caller just finished a call that was queued, pipelined, on
+    /// inbound answer `answer_id`. If the caller finished `answer_id` before,
+    /// the hook did not run at that Finish, because this call still waited
+    /// for the results (`hasCallsPipelinedOnAnswer`). Run it now when no
+    /// call that the caller wants is left on the answer, and the host still
+    /// owes its Return. It runs at most once: once the hook ran at the
+    /// answer's own Finish, no call the caller wants can queue on the answer
+    /// (a call pipelined after the Finish fails at once), so no Finish
+    /// brings this here with the answer's hook still to run.
+    fn reportFinishedAnswerOnceUnwanted(self: *Peer, answer_id: u32) void {
+        const notify = self.answer_finished_fn orelse return;
+        const ctx = self.answer_finished_ctx orelse return;
+        if (self.hasCallsPipelinedOnAnswer(answer_id)) return;
+        if (!self.hostOwesFinishedReturn(answer_id)) return;
+        const release_result_caps = self.finished_early_answers.get(answer_id) orelse return;
+        notify(ctx, self, answer_id, release_result_caps);
+    }
+
+    /// The inbound answer whose `pending_promises` queue holds call
+    /// `question_id` (a call pipelined on that answer), if any.
+    fn answerQueuedOn(self: *const Peer, question_id: u32) ?u32 {
+        var it = self.pending_promises.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.items) |pending| {
+                if (pending.question_id == question_id) return entry.key_ptr.*;
+            }
+        }
+        return null;
     }
 
     /// Apply the caller's Finish to one of this peer's own answers: the
@@ -4946,13 +4986,23 @@ pub const Peer = struct {
             !self.hasQueuedPendingQuestionId(answer_id);
     }
 
-    /// True when calls that the remote pipelined on inbound answer
-    /// `answer_id` wait in the peer for its Return (`pending_promises`).
-    /// They still need the answer's results, so the host may not cancel it.
-    /// The gate of the answer-finished hook and of `sendReturnCanceled`.
+    /// True when a call that the remote pipelined on inbound answer
+    /// `answer_id` waits in the peer for its Return (`pending_promises`) and
+    /// the remote has not finished that call. Such a call still needs the
+    /// answer's results, so the host may not cancel it. A queued call that
+    /// the remote finished does not count: with
+    /// `requireEarlyCancellationWorkaround` (go-capnp's flag) it stays
+    /// queued, but nobody waits for its results, and a cancel of the answer
+    /// gives it its one Return. A call pipelined on that call does not count
+    /// either. The gate of the answer-finished hook and of
+    /// `sendReturnCanceled`.
     fn hasCallsPipelinedOnAnswer(self: *const Peer, answer_id: u32) bool {
         const queued = self.pending_promises.getPtr(answer_id) orelse return false;
-        return queued.items.len != 0;
+        for (queued.items) |pending| {
+            const id = pending.question_id orelse return true;
+            if (self.active_inbound_questions.contains(id)) return true;
+        }
+        return false;
     }
 
     /// True when the peer forwarded inbound answer `answer_id` to another

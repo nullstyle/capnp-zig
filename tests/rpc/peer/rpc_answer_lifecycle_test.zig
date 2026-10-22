@@ -2442,36 +2442,91 @@ test "a host may answer with sendReturnCanceled from inside the answer-finished 
     try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(12)));
 }
 
-test "after the calls pipelined on a finished answer go, the hook stays quiet and sendReturnCanceled answers (P0-1)" {
-    // The caller finishes the answer, then the call pipelined on it. The
-    // peer cancels that call itself; the host is not told then either, and
-    // its ordinary Return would answer. A cancel is now allowed: no call
-    // waits for the results.
+test "after the calls pipelined on a finished answer go, the hook runs once and sendReturnCanceled answers (P0-1)" {
+    // The caller finishes the answer, then the call pipelined on it. While
+    // that call waits for the results, the host is not told, and a cancel is
+    // refused. The call's Finish leaves no call that waits, so the hook runs
+    // then, with the answer's own Finish flag, and a cancel is allowed. With
+    // requireEarlyCancellationWorkaround = false the peer cancels the queued
+    // call at its Finish. With true (go-capnp's flag) the call stays queued,
+    // and the cancel of the answer gives it its one Return.
     const allocator = std.testing.allocator;
-    var peer = Peer.initDetached(allocator);
-    peer.disableThreadAffinity();
-    defer peer.deinit();
-    var capture = newCapture(allocator);
-    defer capture.deinit();
-    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
-    var rec = FinishedRecorder{};
-    peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+    for ([_]bool{ false, true }) |require_early_cancellation| {
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+        var rec = FinishedRecorder{};
+        peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
 
-    var host_ctx: u8 = 0;
-    const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
-    try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
-    try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 43, 10));
-    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, true));
-    try std.testing.expectError(error.AnswerHasPipelinedCalls, peer.sendReturnCanceled(10));
-    try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 43, false));
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(43, .canceled));
-    try std.testing.expectEqual(@as(usize, 0), rec.count);
+        var host_ctx: u8 = 0;
+        const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+        try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 10, export_id));
+        try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 43, 10));
+        try deliverFrame(&peer, allocator, buildFinishFrame(allocator, 10, true));
+        try std.testing.expectError(error.AnswerHasPipelinedCalls, peer.sendReturnCanceled(10));
+        try std.testing.expectEqual(@as(usize, 0), rec.count);
 
-    try peer.sendReturnCanceled(10);
-    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .canceled));
-    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(43, .exception));
-    try std.testing.expectEqual(@as(usize, 2), capture.countTag(.@"return"));
-    try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+        try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 43, false, require_early_cancellation));
+        try std.testing.expectEqual(@as(usize, @intFromBool(!require_early_cancellation)), capture.countReturns(43, .canceled));
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+        try std.testing.expectEqual(@as(u32, 10), rec.last_answer);
+        try std.testing.expect(rec.last_release);
+
+        try peer.sendReturnCanceled(10);
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .canceled));
+        try std.testing.expectEqual(@as(usize, @intFromBool(require_early_cancellation)), capture.countReturns(43, .exception));
+        try std.testing.expectEqual(@as(usize, 2), capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(10)));
+        try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(43)));
+    }
+}
+
+test "a call the caller finished does not keep the answer-finished hook quiet; one it still wants does (P0-1)" {
+    // go-capnp's Finish flag (requireEarlyCancellationWorkaround = true)
+    // keeps a finished queued call queued. Calls 41 and 42 are pipelined on
+    // answer 11, and the caller finishes 42. When it finishes 11, 41 still
+    // waits for the results, so the hook stays quiet. When it finishes 41
+    // too, nothing waits, and the hook runs. Without 41, it runs at 11's
+    // Finish. The cancel then gives each queued call its one Return.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |with_wanted_call| {
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+        var capture = newCapture(allocator);
+        defer capture.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+        var rec = FinishedRecorder{};
+        peer.setAnswerFinishedHandler(&rec, FinishedRecorder.onFinished);
+
+        var host_ctx: u8 = 0;
+        const export_id = try peer.addExport(.{ .ctx = &host_ctx, .on_call = DeferringHost.onCall });
+        try deliverFrame(&peer, allocator, buildExportCallFrame(allocator, 11, export_id));
+        if (with_wanted_call) try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 41, 11));
+        try deliverFrame(&peer, allocator, buildPipelinedCallFrame(allocator, 42, 11));
+        try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 42, false, true));
+        try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 11, false, true));
+        try std.testing.expectEqual(@as(usize, 0), capture.countTag(.@"return"));
+        if (with_wanted_call) {
+            try std.testing.expectEqual(@as(usize, 0), rec.count);
+            try std.testing.expectError(error.AnswerHasPipelinedCalls, peer.sendReturnCanceled(11));
+            try deliverFrame(&peer, allocator, buildFinishFrameWith(allocator, 41, false, true));
+        }
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+        try std.testing.expectEqual(@as(u32, 11), rec.last_answer);
+
+        try peer.sendReturnCanceled(11);
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .canceled));
+        try std.testing.expectEqual(@as(usize, @intFromBool(with_wanted_call)), capture.countReturns(41, .exception));
+        try std.testing.expectEqual(@as(usize, 1), capture.countReturns(42, .exception));
+        try std.testing.expectEqual(@as(usize, 2) + @intFromBool(with_wanted_call), capture.countTag(.@"return"));
+        try std.testing.expectEqual(@as(usize, 1), rec.count);
+        for ([_]u32{ 11, 41, 42 }) |id| try std.testing.expect(!(try peer.inboundAnswerQuestionIdInUse(id)));
+    }
 }
 
 test "answer-finished hook stays quiet while a call is pipelined on the answer (P0-1)" {

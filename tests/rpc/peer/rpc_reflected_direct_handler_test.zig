@@ -888,9 +888,30 @@ const TailHarness = struct {
 
     /// The remote finishes its question `id` (the client's answer `id`).
     fn pushFinish(self: *TailHarness, allocator: std.mem.Allocator, id: u32) !void {
+        try self.pushFinishWith(allocator, id, false);
+    }
+
+    /// `pushFinish` with `requireEarlyCancellationWorkaround` as given (the
+    /// schema default, and what go-capnp sends, is true).
+    fn pushFinishWith(self: *TailHarness, allocator: std.mem.Allocator, id: u32, require_early_cancellation: bool) !void {
         var mb = protocol.MessageBuilder.init(allocator);
         defer mb.deinit();
-        try mb.buildFinish(id, false, false);
+        try mb.buildFinish(id, false, require_early_cancellation);
+        const frame = try mb.finish();
+        defer allocator.free(frame);
+        try self.client_peer.handleFrame(frame);
+    }
+
+    /// The remote answers the client's question `question_id` with results:
+    /// `n = 1`, no capabilities.
+    fn pushResults(self: *TailHarness, allocator: std.mem.Allocator, question_id: u32) !void {
+        var mb = protocol.MessageBuilder.init(allocator);
+        defer mb.deinit();
+        var ret = try mb.beginReturn(question_id, .results);
+        ret.setReleaseParamCaps(false);
+        var payload = try ret.payloadTyped();
+        (try (try payload.initContent()).initStruct(1, 0)).writeU32(0, 1);
+        _ = try ret.initCapTableTyped(0);
         const frame = try mb.finish();
         defer allocator.free(frame);
         try self.client_peer.handleFrame(frame);
@@ -1270,6 +1291,100 @@ test "a call parked on a promise export with a call pipelined on it, finished, t
         try std.testing.expectEqual(@as(?u32, id), h.target.answer_id);
         try h.client_peer.sendReturnResults(id, &result, ResultN.build);
         try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, id, .results));
+    }
+}
+
+/// Results whose content is a capability: the client's import `import_id`
+/// (a capability the remote hosts), origin-tagged so that an export with
+/// the same id does not take its place.
+const ResultImport = struct {
+    import_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+        const self: *const ResultImport = castCtx(*const ResultImport, ctx_ptr);
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        try any.setCapabilityOriginTagged(capnpc.rpc.caps.descriptors.originCodeForTag(.receiverHosted), self.import_id);
+    }
+};
+
+/// The answer-finished hook (`Peer.setAnswerFinishedHandler`): the answer
+/// ids it ran for.
+const FinishedHook = struct {
+    ids: [8]u32 = undefined,
+    count: usize = 0,
+
+    fn onFinished(ctx_ptr: *anyopaque, _: *Peer, answer_id: u32, _: bool) void {
+        const self: *FinishedHook = castCtx(*FinishedHook, ctx_ptr);
+        if (self.count < self.ids.len) self.ids[self.count] = answer_id;
+        self.count += 1;
+    }
+};
+
+test "go-capnp Finish flags: the remote finishes an answer and the call pipelined on it; the hook runs once, and the remote reuses the call's id" {
+    // go-capnp sends requireEarlyCancellationWorkaround = true (the schema
+    // default), so the Peer keeps the finished call 700 queued on answer
+    // 600. Once the remote has finished 600 and every call pipelined on it,
+    // no call waits for 600's results, and the hook runs, in either Finish
+    // order. A host that follows it cancels 600, and 700 gets its one
+    // Return. Before, the hook did not run. The host's answer named the
+    // remote's own capability, so the Peer forwarded 700 there, and nothing
+    // ever finished that question. The remote's reuse of id 700 then failed
+    // with DuplicateQuestionId.
+    const allocator = std.testing.allocator;
+    for ([_]bool{ true, false }) |pipelined_call_finished_first| {
+        var h: TailHarness = undefined;
+        try h.start(allocator);
+        defer h.deinit();
+        var hook = FinishedHook{};
+        h.client_peer.setAnswerFinishedHandler(&hook, FinishedHook.onFinished);
+
+        try h.pushPlainCall(allocator, 600, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 600), h.target.answer_id);
+        try h.pushPipelinedPlainCall(allocator, 700, 600);
+        const first: u32 = if (pipelined_call_finished_first) 700 else 600;
+        try h.pushFinishWith(allocator, first, true);
+        // 700 still waits for 600's results: the hook has not run.
+        try std.testing.expectEqual(@as(usize, 0), hook.count);
+        try h.pushFinishWith(allocator, if (first == 700) 600 else 700, true);
+        const told = hook.count;
+
+        // A host that follows the hook: cancel once it ran, else its
+        // handler's answer, which names the remote's own capability.
+        const wire_mark = h.wire.events.items.len;
+        if (told != 0) {
+            try h.client_peer.sendReturnCanceled(600);
+        } else {
+            var result = ResultImport{ .import_id = h.server_import_id };
+            try h.client_peer.sendReturnResults(600, &result, ResultImport.build);
+        }
+        // The remote answers a call that came to it.
+        var forwarded = false;
+        var idx = wire_mark;
+        while (idx < h.wire.events.items.len) : (idx += 1) {
+            const event = h.wire.events.items[idx];
+            if (event.dir != .client_to_server or event.tag != .call) continue;
+            forwarded = true;
+            try h.pushResults(allocator, event.id);
+        }
+
+        // The remote has a Return for 700 and finished it: it reuses the id.
+        h.target.answer_id = null;
+        try h.pushPlainCall(allocator, 700, h.target_export_id);
+        try std.testing.expectEqual(@as(?u32, 700), h.target.answer_id);
+        try std.testing.expect(!forwarded);
+        try std.testing.expectEqual(@as(usize, 1), told);
+        try std.testing.expectEqual(@as(u32, 600), hook.ids[0]);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, .canceled));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 600, null));
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .exception));
+
+        var result = ResultN{ .n = 7 };
+        try h.client_peer.sendReturnResults(700, &result, ResultN.build);
+        try std.testing.expectEqual(@as(usize, 1), h.wire.countReturns(.client_to_server, 700, .results));
+        try std.testing.expectEqual(@as(usize, 2), h.wire.countReturns(.client_to_server, 700, null));
+        try std.testing.expectEqual(@as(usize, 1), hook.count);
+        try std.testing.expect(!(try h.client_peer.inboundAnswerQuestionIdInUse(600)));
     }
 }
 
