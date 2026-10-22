@@ -149,12 +149,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not told, and its ordinary answer forwards the finished call. That was the
   regression found in the held v0.28.1 patch. The known limit "A call
   finished with go-capnp's Finish flag can close the connection" is
-  removed. The C++ reference sends the flag as false, and then the Peer
+  removed. One shape still fails with go-capnp: a forward as a tail call
+  (the host's answer names a PROMISED capability on one of its own
+  questions) gets Unimplemented, and the Finish that the Peer sends for it
+  ends the connection. That is older than this fix, and is a new known
+  limit in `docs/supported-surface.md`. The C++ reference sends the flag as false, and then the Peer
   cancels a queued call at its Finish, as before. Tests: "forwarded call:
   a call that go-capnp finished, forwarded back to it, ...", "forwarded
   call: a finished queued call that the core forwards to the remote ...",
   "forwarded call: a call that go-capnp finished, forwarded as a tail call
-  on the host's own question, ..." and "forwarded call: a call that
+  on the host's own question to a remote that answers
+  resultsSentElsewhere, ..." and "forwarded call: a call that
   go-capnp finished and the core forwarded ends at transport close or at
   free, ..." in `src/native/conn_test.zig`; "go-capnp Finish flags: a
   finished call forwarded back to the remote ...", "go-capnp Finish flags:
@@ -163,6 +168,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends at transport close or at deinit, ..." and "go-capnp Finish flags:
   an allocation failure anywhere in a forward after the Finish: ..." in
   `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
+
+- **RPC: the remote's new call no longer closes the connection when its
+  id equals one of the Peer's forwarded question ids.** Question ids are
+  per direction, and both sides count from 0 (go-capnp and the C++
+  reference take the lowest free id). `inboundAnswerQuestionIdInUse`
+  looked up the keys of `forwarded_questions`, which are the Peer's own
+  question ids. So while any forward waited (W1 reflected loopback, a tail
+  call, or the go-capnp finished-call forward above), a compliant call
+  from the remote with that id failed with `DuplicateQuestionId`, and the
+  connection closed. Now the check looks at the upstream answer ids that a
+  forward still owes a Return for. This defect is older than v0.28.0.
+  Tests: "forwarded call: the remote's own call with the id of the
+  forwarded question reaches the host while the forward waits" in
+  `src/native/conn_test.zig` and "a remote call with the id of the peer's
+  forwarded question reaches the host while the forward waits" in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`.
+
+- **RPC and native: a finished call that still owes its Return counts in
+  `max_active_inbound_questions`.** The Peer keeps a record of each
+  Finish that comes before the call's Return (`finished_early_answers`).
+  Those records had a bound of their own, and the Finish took the record
+  with an allocation that could fail. When the records were full, or the
+  allocation failed, the Finish left no record. The late Return of that
+  call was then recorded as an answer that no Finish clears: its id stayed
+  in use, and the remote's compliant reuse closed the connection
+  (`DuplicateQuestionId`). That held for the host's answer and for a
+  finished call that the Peer forwards back to the remote. It was
+  reachable with go-capnp's Finish once `max_active_inbound_questions`
+  finished calls (4096 by default) waited for their Returns. Now the
+  calls that the remote finished count in the same bound as the calls it
+  has not finished, and the Peer reserves the record of each call when it
+  admits the call. A call past the bound gets one exception Return
+  (`OwedAnswerLimitExceeded`, the reason the native core already used for
+  too many owed answers) before its params take any capability, and the
+  connection stays up. As before, a remote whose unfinished calls alone
+  reach the bound closes the connection (`PeerLimitExceeded`). The
+  `setAnswerFinishedHandler` hook, `CAPNP_EFFECT_ANSWER_FINISHED` and the
+  WASM kind-4 event now come for every finished call that the host owes:
+  "When no effect comes" in `docs/native-abi.md` no longer has a
+  "records full" case. The native core's own check for a reused owed id
+  stays as a second guard. The documented limit "a reused id on a call the
+  core answers itself is not caught" is gone: the Peer catches it now.
+  Tests: "finished calls that owe a Return count in
+  max_active_inbound_questions: ..." and "an allocation failure in a
+  Finish keeps the record of the finished call: ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "inbound:
+  finished calls that the core keeps queued count in
+  max_active_inbound_questions; ...", "inbound: a reused id on a call the
+  core answers itself closes the connection" and "answer finished: a call
+  past max_active_inbound_questions calls that owe a Return is refused;
+  ..." in `src/native/conn_test.zig`; and the rewritten H5 and param-cap
+  tests in `tests/rpc/peer/`.
+
+- **RPC: a Return that the Peer owes and cannot send now ends the
+  connection.** Some calls get their one Return from the Peer itself: a
+  replay of a call that waited on an answer or a promise export (its
+  forward, or the exception Return after a failed forward), the drains
+  that fail parked or queued calls, the cancel of a queued call at its
+  Finish, and `Return{canceled}` when a Finish comes before a forwarded
+  call's Return. When that Return could not be built or sent (out of
+  memory, a failed send), the Peer only reported the error. Nothing
+  answered the call again, its id stayed in use, and the remote's question
+  waited with the connection up. Now the Peer reports the error and asks
+  its transport to close (`closeAttachedTransport`), so the question ends
+  at disconnect. The native core then queues CLOSE_REQUESTED. A Return
+  that the host sends (`sendReturnResults`, `capnp_return_*`) still
+  returns its error to the host, which can answer again. A peer with no
+  attached transport (`HostPeer`, the WASM host ABI) only reports. Tests:
+  "go-capnp Finish flags: an allocation failure anywhere in a forward after
+  the Finish: one Return per call or the connection ends, no leak" (four
+  shapes, sticky and one-shot failures) and "a Finish that the peer
+  answers canceled itself: under an allocation failure, one Return or the
+  connection ends" in `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`;
+  "forwarded call: an allocation failure anywhere in a forward after the
+  Finish: one RETURN per call or the connection ends, no leak" in
+  `src/native/conn_test.zig`.
 
 - **Native: `capnp_call` refuses to pipeline on a loopback question.** A
   question whose call loops back to one of the host's own exports (the
@@ -192,8 +273,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start used to leave every call queued on the failed answer with no
   Return, because it seeded its worklist on the heap. Now the first 32 ids
   wait on the stack, so a failed allocation can lose only the Return that
-  the drain was building. That last case stays best effort, as for every
-  Return that the Peer sends itself. Tests: the one-shot allocation-failure
+  the drain was building. When that Return is lost, the Peer now ends the
+  connection (see "a Return that the Peer owes and cannot send" below). Tests: the one-shot allocation-failure
   sweeps "pipelined call: one transient allocation failure ..." and
   "promise export: one transient allocation failure ..." in
   `src/native/conn_test.zig`, and "one failed allocation in the failure
@@ -234,6 +315,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- `docs/supported-surface.md`: two new known limits. A tail-call forward
+  to go-capnp ends the connection (go-capnp answers the `sendResultsTo =
+  yourself` call with Unimplemented, then fails on the Peer's Finish for
+  it). And a Return that the Peer cannot send still keeps the connection
+  up on a peer with no attached transport (`HostPeer`), and on the Join,
+  streaming, Level-3 provision and third-party paths.
+- `docs/downstreams.md`: the v0.29.0 drafts for capnp-swift and capnp-deno
+  name the question-id fix for forwards and the new bound on finished
+  calls that owe a Return. The capnp-swift draft also names
+  CLOSE_REQUESTED for a Return that the core cannot send, and the
+  go-capnp tail-call limit.
 - `docs/upstream/handoff-quic-zig-tag-hardening.md` (new): it asks quic-zig
   for a tag at `b0d7d78` or later that contains `021591e`, with CHANGELOG
   and DOWNSTREAM-NOTE entries. It names the duplicate-ID scan in

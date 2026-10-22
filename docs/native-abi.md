@@ -248,7 +248,13 @@ capability on one of the host's own questions. The forwarded copy of a
 call that the remote
 still wants gets its Finish when the remote finishes that call. Either
 way, the remote can reuse the call's id once it has the call's Return and
-has finished it.
+has finished it. While a forward waits, the remote's own new calls use
+their ids freely: question ids are per direction, so a call with the same
+id as a forwarded question is no reuse. A go-capnp remote answers the
+tail-call forward (a PROMISED capability on one of the host's own
+questions) with Unimplemented and then fails on its Finish, which ends
+the connection ("A tail-call forward to go-capnp ends the connection" in
+[supported-surface.md](supported-surface.md)).
 
 **Tail calls.** While a question X waits for the answer to a call Y ("Tail
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants

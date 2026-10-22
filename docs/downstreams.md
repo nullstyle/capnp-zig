@@ -152,7 +152,30 @@ The owner sends this text after the v0.29.0 tag exists.
 > happen with cancel on too, while the caller still wanted another call
 > pipelined on that answer. In v0.29.0 the core finishes the forwarded question once it relays its
 > Return, and the caller can reuse the id. This defect is why there was no
-> v0.28.1. Nothing changes on your side.
+> v0.28.1. Also, while a forward waits, the caller's own new call with the
+> same id as the forwarded question no longer closes the connection
+> (question ids are per direction). Nothing changes on your side. One
+> shape still fails with a go-capnp caller: when your answer names a
+> PROMISED capability on one of your own questions, the core forwards the
+> call as a tail call, go-capnp answers it Unimplemented, and the Finish
+> that the core sends then ends the connection.
+>
+> **Finished calls count in `max_active_inbound_questions`.** A call that
+> the caller finished still owes its Return, so it now counts in that bound
+> with the calls the caller has not finished, also while the core keeps it
+> queued. A call past the bound gets an exception RETURN
+> (`OwedAnswerLimitExceeded`) and never reaches you, and the connection
+> stays up. In return, the core keeps a record of every Finish until the
+> call's Return: ANSWER_FINISHED comes for every finished call you owe
+> (v0.28.0 sent none when those records were full), and a reused id is
+> always caught. Before, with the records full, your late answer could
+> keep the call's id in use, and the caller's reuse closed the connection.
+>
+> **A Return that the core cannot send.** When the core answers a call
+> itself (a parked call that it replays or fails, a queued call that its
+> Finish cancels) and cannot send that RETURN, for example out of memory,
+> it now queues CLOSE_REQUESTED. Before, the call never got a RETURN and
+> the connection stayed up. Act on CLOSE_REQUESTED as usual.
 >
 > One case still fails a call that the caller wants: a call pipelined on a
 > call that the caller finished. For `foo().bar().baz()`, when the caller
@@ -335,7 +358,12 @@ paragraph.
 > event `capnp_peer_send_return_canceled` still answers. The same release
 > also finishes a call that a go-capnp caller finished and the peer then
 > forwarded back to it, so the caller's reuse of that id no longer closes
-> the connection.
+> the connection. While a forward waits, the caller's new call with the
+> id of the forwarded question no longer closes it either. A call that
+> the caller finished now counts in `max_active_inbound_questions` until
+> its Return goes out: a call past that bound gets an exception Return
+> (`OwedAnswerLimitExceeded`) and never reaches your host, and every
+> finished call you owe gets its kind-4 event.
 >
 > One limit stays: through `HostPeer`, a call pipelined on a host call
 > that you answer with `capnp_peer_respond_host_call_return_frame` still

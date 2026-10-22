@@ -3061,7 +3061,7 @@ test "forwarded call: a finished queued call that the core forwards to the remot
     }
 }
 
-test "forwarded call: a call that go-capnp finished, forwarded as a tail call on the host's own question, is finished once its Return comes" {
+test "forwarded call: a call that go-capnp finished, forwarded as a tail call on the host's own question to a remote that answers resultsSentElsewhere, is finished once its Return comes" {
     // As above, but the host answers 30 with a PROMISED capability on its
     // own question q to the remote. The core forwards 40 as a call on q's
     // answer with sendResultsTo = yourself, and answers 40 with
@@ -3107,6 +3107,68 @@ test "forwarded call: a call that go-capnp finished, forwarded as a tail call on
         try testing.expectEqual(@as(usize, 1), countCalls(&p.ra, 40));
         try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
         try testing.expect(p.a.last_error == null);
+    }
+}
+
+/// An Unimplemented that echoes the Call OUT_FRAME with question id
+/// `qid` that `rec` kept, as go-capnp answers a Call whose
+/// `sendResultsTo` is not `caller` (rpc/rpc.go, handleCall).
+fn unimplementedEchoFrame(alloc: std.mem.Allocator, rec: *Rec, qid: u32) ![]const u8 {
+    for (rec.frames.items) |bytes| {
+        var d = try protocol.DecodedMessage.init(alloc, bytes);
+        defer d.deinit();
+        if (d.tag != .call or (try d.asCall()).question_id != qid) continue;
+        var msg = try message.Message.initUnvalidated(alloc, bytes);
+        defer msg.deinit();
+        var mb = protocol.MessageBuilder.init(alloc);
+        defer mb.deinit();
+        try mb.buildUnimplementedFromAnyPointer(try msg.getRootAnyPointer());
+        return mb.finish();
+    }
+    return error.TestNoSuchCall;
+}
+
+test "forwarded call: known limit: a tail-call forward to a go-capnp remote gets Unimplemented, and the core still sends Finish for it" {
+    // The host answers 30 with a PROMISED capability on its own question
+    // q, so the core forwards call 40 as a call on q's answer with
+    // sendResultsTo = yourself. go-capnp answers any such Call with
+    // Unimplemented and keeps no answer for it. The core turns the echo
+    // into an exception for the forwarded question and, as for any
+    // question, sends Finish for it: once its Return comes when the remote
+    // finished 40 first, and at the remote's Finish of 40 otherwise.
+    // go-capnp's handleFinish fails on an unknown answer id and ends the
+    // connection (read in vendor/ext/go-capnp/rpc/rpc.go, not run). This
+    // pins what the core sends; v0.28.0 sends the same.
+    const alloc = testing.allocator;
+    for ([_]bool{ true, false }) |finished_first| {
+        var p = try TailPair.init(alloc, .{ .now_ns = 0 });
+        defer p.deinit();
+        const t = try p.start(alloc);
+        try drainAll(p.a, &p.ra);
+        const calls_out = try countCallFrames(&p.ra);
+
+        try pushFrame(alloc, p.a, plainCallFrame(alloc, 30, t.ea));
+        try pushFrame(alloc, p.a, pipelinedCallFrame(alloc, 40, 30));
+        if (finished_first) try pushFrame(alloc, p.a, finishFrameFull(alloc, 40, true, true));
+        try drainAll(p.a, &p.ra);
+        const path = [_]u16{0};
+        const on_q: Cap = .{ .kind = .promised, .id = t.q, .ops = &path, .nops = 1 };
+        const res = try msgCap(alloc, 1, 0);
+        defer alloc.free(res);
+        try p.a.returnResults(30, res, &.{on_q});
+        try drainAll(p.a, &p.ra);
+        var qfs: [2]u32 = undefined;
+        try testing.expectEqual(@as(usize, 1), try callFrameQidsAfter(&p.ra, calls_out, &qfs));
+        const qf = qfs[0];
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, .takeFromOtherQuestion));
+
+        try pushFrame(alloc, p.a, unimplementedEchoFrame(alloc, &p.ra, qf));
+        if (!finished_first) try pushFrame(alloc, p.a, finishFrame(alloc, 40));
+        try drainAll(p.a, &p.ra);
+        try testing.expectEqual(@as(usize, 1), try countReturnFrames(&p.ra, 40, null));
+        try testing.expectEqual(@as(usize, 1), try countFinishFrames(&p.ra, qf));
+        try expectForwardGone(p.a, 40, qf);
+        try testing.expectEqual(@as(usize, 0), p.ra.close_requested);
     }
 }
 

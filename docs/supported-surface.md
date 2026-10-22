@@ -959,6 +959,31 @@ cooperating peer.
   call does not keep the answer-finished hook quiet (P0-1)" in
   `tests/rpc/peer/rpc_answer_lifecycle_test.zig`.
 
+- **A tail-call forward to go-capnp ends the connection.** When a host
+  answers a call with a PROMISED capability on one of its own questions to
+  the remote, the Peer forwards the calls pipelined on that answer as calls
+  on the question's answer with `sendResultsTo = yourself`. go-capnp
+  answers every such Call with `Unimplemented` and keeps no answer for it
+  (`vendor/ext/go-capnp/rpc/rpc.go`, handleCall). The Peer turns the echo
+  into an exception for the forwarded question and still sends a Finish
+  for it, and go-capnp's handleFinish fails on that unknown answer id and
+  ends the connection. This holds for a call the caller still wants and
+  for one it finished first; v0.28.0 sends the same. The go-capnp code was
+  read, not run. Pinned by "forwarded call: known limit: a tail-call
+  forward to a go-capnp remote gets Unimplemented, and the core still
+  sends Finish for it" in `src/native/conn_test.zig`.
+
+- **Some Returns that the Peer cannot send do not end the connection.**
+  When the Peer cannot send the one Return of a call it answers itself in
+  a replay, a parked-call or queued-call drain, the cancel of a queued
+  call, or the cancel of a forwarded call, it closes the connection
+  (`peer_return_dispatch.loseReturnForPeer`). A peer with no attached
+  transport (`HostPeer`, the WASM host ABI) only reports the error, and
+  the remote's question then waits until the host closes the connection.
+  The same holds for the Returns that the Join, streaming, Level-3
+  provision and third-party paths send: they log or report a failed send
+  and keep the connection up.
+
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Of the items above, only the
 `sendResultsTo = thirdParty` item is a Level-3 surface. Historical
