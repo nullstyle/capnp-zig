@@ -195,11 +195,13 @@ typedef struct capnp_cap {
                                            Finish or, for a call from this
                                            connection to one of its own exports,
                                            the host canceled that question or its
-                                           deadline passed). Never while calls
-                                           are pipelined on the answer, and not
-                                           later when they go: they need its
-                                           results, so answer as usual. id = its
-                                           answer id;
+                                           deadline passed). Not while a call
+                                           that the remote has not finished is
+                                           pipelined on the answer: it needs the
+                                           results. Then it comes when the
+                                           remote finishes the last such call,
+                                           if the host still owes the answer.
+                                           id = its answer id;
                                            export_id and host_tag as in that
                                            INBOUND_CALL (it can come after that
                                            export's EXPORT_DROPPED: find the
@@ -403,10 +405,11 @@ int32_t capnp_return_exception(capnp_conn *conn, uint32_t answer_id, uint16_t ex
  * (opts.answer_finished off, no Finish yet, a tail-call hold withholds it,
  * or the core did not report the Finish: its records were full or out of
  * memory, the call was still queued in the core when the Finish came, or
- * calls were pipelined on the answer). A call pipelined on the answer after
- * its Finish, which the protocol forbids, gets an exception RETURN at once
- * and does not change this. On CAPNP_E_INVAL or another error, nothing is
- * sent and the answer stays owed. Instead of this, the host may answer with
+ * a call that the remote had not finished was pipelined on the answer; see
+ * that effect). A call pipelined on the answer after its Finish, which the
+ * protocol forbids, gets an exception RETURN at once and does not change
+ * this. On CAPNP_E_INVAL or another error, nothing is sent and the answer
+ * stays owed. Instead of this, the host may answer with
  * capnp_return_results or capnp_return_exception; it answers once. A no-op
  * once the connection is closed, as for capnp_return_results, with or
  * without an ANSWER_FINISHED. */

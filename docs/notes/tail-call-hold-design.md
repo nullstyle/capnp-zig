@@ -172,10 +172,11 @@ Differences from C++, all deliberate:
 3. C++ cancels Y's work when X is cancelled. The 0.27.0 C ABI had no
    effect that told the host to stop a call. Since 0.28.0, with the
    `answer_finished` opt-in, the host gets ANSWER_FINISHED for Y when the
-   remote finished Y and the hold ends without Y's answer, unless calls
-   were pipelined on Y when its Finish came (they still need Y's results,
-   so no ANSWER_FINISHED comes for Y; v0.28.1). The host's answer is still
-   sent, and only X ends.
+   remote finished Y and the hold ends without Y's answer. While a call
+   that the remote has not finished is pipelined on Y, it still needs Y's
+   results, so ANSWER_FINISHED waits for the Finish of the last such call
+   (v0.28.1), and comes only if the remote sends it. The host's answer is
+   still sent, and only X ends.
 4. C++ delivers results with capabilities. The shim gives one RETURN
    EXCEPTION for them (the Peer cannot re-deliver those results locally
    either).

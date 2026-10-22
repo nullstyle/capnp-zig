@@ -736,11 +736,13 @@ pub fn ReturnSend(comptime Peer: type) type {
         /// treats a Return for a question it already retired as a protocol
         /// error. `Peer.sendReturnCanceled` therefore refuses, before anything
         /// is sent, an answer the caller has not finished and one the host
-        /// does not owe a Return for. It also refuses an answer that calls
-        /// are pipelined on (rpc.capnp: cancel only when nothing else cares
-        /// about the result), so through it this drain finds no call. The
+        /// does not owe a Return for. It also refuses an answer that a call
+        /// the caller still wants is pipelined on (rpc.capnp: cancel only
+        /// when nothing else cares about the result), so through it this
+        /// drain finds only calls that the caller finished (go-capnp's
+        /// `requireEarlyCancellationWorkaround` keeps them queued). The
         /// Finish relay of a forwarded call (`sendTailFinishAndNeutralize`)
-        /// calls this directly: there, calls pipelined on the answer can
+        /// calls this directly. Either way, calls pipelined on the answer can
         /// never resolve now, so each gets its own exception Return, as with
         /// `sendReturnResultsSentElsewhere`.
         pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {

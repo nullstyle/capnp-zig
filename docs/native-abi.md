@@ -146,9 +146,11 @@ answered, and stop the work (capnp-swift handoff H13). It is an opt-in:
   makes `capnp_conn_new` return `CAPNP_E_INVAL`. A host built against an
   older header passes a smaller `struct_size`, so it gets 0.
 
-When the remote sends Finish for an INBOUND_CALL that the host owes, and
-no call is pipelined on that answer, the core queues one
-`CAPNP_EFFECT_ANSWER_FINISHED` (6). Its `id` is the answer id, `export_id`
+When the remote sends Finish for an INBOUND_CALL that the host owes, the
+core queues one `CAPNP_EFFECT_ANSWER_FINISHED` (6). While a call that the
+remote has not finished is pipelined on that answer, the core waits, and
+queues the effect when the remote finishes the last such call (see "When
+no effect comes"). Its `id` is the answer id, `export_id`
 and `host_tag` are those of the INBOUND_CALL, and every other field is 0.
 The core queues it at most once per call. Its node is reserved when the
 INBOUND_CALL is queued, so after the core records the Finish, a lack of
@@ -213,28 +215,48 @@ connection, and then no call gets ANSWER_FINISHED. That flag defaults to
 true. The C++ reference (1.0 and
 later) sends false, but go-capnp never sets it, so with a go-capnp caller,
 each Finish of a queued call takes a record. Such a queued call reaches the
-host after its Finish and gets no ANSWER_FINISHED: answer it as usual.
+host after its Finish and gets no ANSWER_FINISHED then: answer it as usual.
+If calls are pipelined on it, one can come later, as below.
 
-The core also does not report a Finish while calls are pipelined on the
-answer. A pipelined call targets the results of a call that has not
-returned yet. Those calls still need the results: rpc.capnp lets the
-callee cancel a finished call only when nothing else cares about the
-result, "e.g. there are no other outstanding calls pipelined on the
-result". The C++ reference makes this sequence for
-`foo().getSub().bar()` when the caller drops foo's promise: Call(foo),
-Call(bar on foo), Finish(foo). The host's ordinary answer to foo then
-delivers bar. The core does not report the Finish later either, when the
-pipelined calls go (their caller finished them): the host's ordinary
-answer still settles the call. That wastes the host's work, but it is
-correct.
+The core also waits while calls are pipelined on the answer. A pipelined
+call targets the results of a call that has not returned yet. Such a call
+still needs the results: rpc.capnp lets the callee cancel a finished call
+only when nothing else cares about the result, "e.g. there are no other
+outstanding calls pipelined on the result". The C++ reference makes this
+sequence for `foo().getSub().bar()` when the caller drops foo's promise:
+Call(foo), Call(bar on foo), Finish(foo). The host's ordinary answer to
+foo then delivers bar. When the remote finishes bar too, no call waits
+for foo's results, and ANSWER_FINISHED comes for foo then, if the host
+still owes foo. If the remote never finishes bar, no ANSWER_FINISHED comes
+for foo, and the host's ordinary answer settles it.
+
+A call that the remote has already finished does not make the core wait.
+With `requireEarlyCancellationWorkaround` (go-capnp's Finish), such a call
+stays queued until foo returns. `capnp_return_canceled` of foo gives it
+its one exception RETURN. A call pipelined on such a call does not make
+the core wait either: for `foo().bar().baz()` with bar finished, the
+cancel of foo also fails baz.
+
+Known limit, with that flag: when a call that the remote still wants
+makes the core wait, the host answers foo as usual. If foo's answer names
+one of the remote's own capabilities, the core forwards the queued calls
+there. It never finishes the forwarded copy of a call that the remote had
+already finished. So when the remote reuses that call's id, the
+connection closes (`DuplicateQuestionId`). Without `answer_finished`, the
+same happens whenever foo's answer names such a capability. See "A call
+finished with go-capnp's Finish flag can close the connection" in
+[supported-surface.md](supported-surface.md).
 
 **Tail calls.** While a question X waits for the answer to a call Y ("Tail
 calls" below), a Finish of Y does not queue ANSWER_FINISHED: X still wants
 Y's answer. If the wait ends without Y's answer (`capnp_cancel` of X, X's
 deadline, or the shutdown drain bound), the core queues ANSWER_FINISHED for
-Y then, before X's RETURN. It does not when calls were pipelined on Y when
-Y's Finish came: those calls still need Y's results, so no ANSWER_FINISHED
-comes for Y at all. A transport close queues none. The core never
+Y then, before X's RETURN. When a call that the remote has not finished is
+pipelined on Y, the core first waits for the Finish of the last such call,
+as above. If X still waits then, ANSWER_FINISHED is withheld until X ends
+without Y's answer. If X ended first, it comes at that Finish. If the
+remote never finishes those calls, no ANSWER_FINISHED comes for Y. A
+transport close queues none. The core never
 makes X wait for a Y that it already reported: X then gets RETURN EXCEPTION
 (`unimplemented`).
 

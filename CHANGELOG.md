@@ -20,11 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event. The host's `Return{canceled}` then failed bar. capnp-swift 0.2.0
   turns the report on by default (`cancelHandlersOnFinish`), and capnp-deno
   answers every report with `capnp_peer_send_return_canceled`. Now the
-  Peer does not report a Finish while calls are pipelined on the answer.
-  It does not report it later either, when those calls go: the host's
-  ordinary answer settles the call. That wastes the host's work, but it is
-  correct. `Peer.sendReturnCanceled` (Experimental) refuses such an answer
-  with the new `error.AnswerHasPipelinedCalls` and sends nothing. The
+  Peer does not report a Finish while a call that the caller has not
+  finished is pipelined on the answer. It reports it when the caller
+  finishes the last such call, if the host still owes the answer. A
+  queued call that the caller already finished does not count: go-capnp's
+  Finish (`requireEarlyCancellationWorkaround = true`) keeps it queued,
+  and the host's cancel gives it its one exception Return. One case with
+  that flag is a known limit ("A call finished with go-capnp's Finish flag
+  can close the connection" in `docs/supported-surface.md`). When a wanted
+  call is pipelined beside the finished one, the host is not told. If its
+  answer names one of the caller's own capabilities, the Peer forwards the
+  finished call there and never finishes it, so the caller's reuse of its
+  id closes the connection. Here v0.28.0 told the host, and its cancel
+  failed the wanted call too. Without the report, this happens as before.
+  `Peer.sendReturnCanceled` (Experimental) refuses an answer that a
+  wanted call is pipelined on with the new `error.AnswerHasPipelinedCalls`
+  and sends nothing. The
   native `capnp_return_canceled` returns `CAPNP_E_INVAL` for it, because
   no effect was queued. A call that is pipelined on an answer after its
   Finish breaks rpc.capnp. The Peer now answers such a call at once with
@@ -42,14 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native fuzz (`zig build fuzz-native-abi`) now checks the rule in clean
   sessions. Tests: "answer-finished hook stays quiet while a call is
   pipelined on the answer (P0-1)", "a call pipelined on an answer after
-  its Finish gets an exception Return at once (P0-1)" and one more P0-1
-  test in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`; "answer
+  its Finish gets an exception Return at once (P0-1)", "a call the caller
+  finished does not keep the answer-finished hook quiet; ..." and two
+  more P0-1 tests in `tests/rpc/peer/rpc_answer_lifecycle_test.zig`;
+  "go-capnp Finish flags: the remote finishes an answer and the call
+  pipelined on it; ..." in
+  `tests/rpc/peer/rpc_reflected_direct_handler_test.zig`; "answer
   finished: no ANSWER_FINISHED while a call is pipelined on the answer;
-  ..." and "answer finished: a call pipelined on the answer after its
-  Finish gets an exception RETURN at once; ..." in
+  ...", "answer finished: a call pipelined on the answer after its Finish
+  gets an exception RETURN at once; ...", "answer finished: with
+  go-capnp's Finish flags, ...", "answer finished: a held call whose
+  pipelined call the remote finishes too is reported once, after the
+  hold", "answer finished: a queued call that reaches the host after its
+  Finish is reported once ..." and "known limit: a finished queued call
+  that the core forwards to the remote keeps its id in use" in
   `src/native/conn_test.zig`; and "answer cancellation: no event while a
-  call is pipelined on the answer; ..." and "answer cancellation: a call
-  pipelined after the Finish fails at once; ..." in
+  call is pipelined on the answer; ...", "answer cancellation: a call
+  pipelined after the Finish fails at once; ..." and "answer
+  cancellation: with go-capnp's Finish flags, ..." in
   `tests/wasm_host_abi_test.zig`.
 
 - **RPC: a parked call now gets its Return when the Peer cannot decode it

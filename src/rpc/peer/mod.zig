@@ -236,7 +236,7 @@ const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 
 /// Experimental. The callback `Peer.setAnswerFinishedHandler` installs. It
 /// runs when the caller finished an answer that the host owes and that no
-/// call is pipelined on.
+/// call the caller still wants is pipelined on.
 pub const AnswerFinishedFn = *const fn (ctx: *anyopaque, peer: *Peer, answer_id: u32, release_result_caps: bool) void;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
@@ -1678,19 +1678,24 @@ pub const Peer = struct {
     /// answers a forwarded call `canceled` when the Finish comes before the
     /// forwarded call's Return). A
     /// queued call whose Finish set `requireEarlyCancellationWorkaround` is
-    /// delivered later and never reported; answer it as usual.
+    /// delivered later, and that Finish is not reported when it is
+    /// delivered; answer it as usual. The handler runs for it later only as
+    /// below, when calls pipelined on it go.
     ///
-    /// It does not run while calls pipelined on the answer wait for its
-    /// results: they still need them (rpc.capnp, Finish: cancel only when
-    /// nothing else cares about the result), and `sendReturnCanceled`
-    /// refuses the id with `error.AnswerHasPipelinedCalls`. It does not run
-    /// later either, when those calls go (their caller finished them): the
-    /// host's ordinary Return answers the call. That wastes the host's
-    /// work, but it is correct. A call pipelined on the answer after its
-    /// Finish breaks rpc.capnp ("no further pipelined requests"). The peer
-    /// answers such a call at once with an exception Return, as the C++
-    /// reference does, so it never waits on the answer: after the handler
-    /// ran, `sendReturnCanceled` still answers the id.
+    /// It does not run while a call pipelined on the answer, which the
+    /// caller has not finished, waits for its results: that call still
+    /// needs them (rpc.capnp, Finish: cancel only when nothing else cares
+    /// about the result), and `sendReturnCanceled` refuses the id with
+    /// `error.AnswerHasPipelinedCalls`. A queued call that the caller
+    /// finished does not count: with `requireEarlyCancellationWorkaround`
+    /// (go-capnp's flag) it stays queued, but nobody waits for it. A call
+    /// pipelined on such a call does not count either. When the caller
+    /// finishes the last call that waits, the handler runs then, inside
+    /// that Finish, if the host still owes the answer. A call pipelined on
+    /// the answer after its Finish breaks rpc.capnp ("no further pipelined
+    /// requests"). The peer answers such a call at once with an exception
+    /// Return, as the C++ reference does, so it never waits on the answer:
+    /// after the handler ran, `sendReturnCanceled` still answers the id.
     ///
     /// The peer remembers a finished, unanswered call in a record bounded by
     /// `limits.max_active_inbound_questions`. When those records are full,
@@ -3937,12 +3942,15 @@ pub const Peer = struct {
     /// already got its Return, the id was never an inbound question, the
     /// peer settles the answer itself (a forwarded or still-queued call), or
     /// the peer stopped tracking it (see `setAnswerFinishedHandler`). Errors
-    /// with `error.AnswerHasPipelinedCalls` while calls pipelined on the
-    /// answer wait for its results: a cancel would fail them, and rpc.capnp
-    /// allows a cancel only when nothing else cares about the result. Answer
-    /// such a call with an ordinary Return. Only calls pipelined before the
-    /// Finish wait: the peer fails a later one at once, so this error never
-    /// follows the handler. Body in `return/peer_return_send.zig`.
+    /// with `error.AnswerHasPipelinedCalls` while a call pipelined on the
+    /// answer, which the caller has not finished, waits for its results: a
+    /// cancel would fail it, and rpc.capnp allows a cancel only when nothing
+    /// else cares about the result. Answer such a call with an ordinary
+    /// Return, or wait for the handler: it runs when the caller finishes the
+    /// last such call. Only calls pipelined before the Finish wait: the peer
+    /// fails a later one at once, so this error never follows the handler.
+    /// A queued call that the caller finished gets an exception Return from
+    /// the cancel. Body in `return/peer_return_send.zig`.
     pub fn sendReturnCanceled(self: *Peer, answer_id: u32) !void {
         self.assertThreadAffinity();
         if (self.active_inbound_questions.contains(answer_id)) return error.AnswerNotFinished;

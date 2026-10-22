@@ -56,7 +56,7 @@ Status words:
 | Tail calls | Follow a cap-free tail-call Return (`takeFromOtherQuestion`) through the native C ABI. | `docs/handoffs/tail-call-returns-for-native.md` | delivered in v0.27.0 | The hold lives in the native shim: a question waits while the host still owes the named call, and the host's answer becomes its one RETURN. Results that point at a capability still end it with RETURN EXCEPTION. Design and termination proof: `docs/notes/tail-call-hold-design.md`. The earlier Peer-level hold is on branch `archive/p1-3-tail-call-hold`. Verified by capnp-swift: C++ server and Swift client `resolve_disembargo` passes 9/9; the v0.23.0 core fails the same run with "unsupported Return variant". See the relay text below. | 2026-10-20 |
 | Native feature bits | The native ABI v1 feature bits. `capnp_core_features()` reported 0. | none (sprint plan 2026-10-15, "Not in this sprint") | delivered in v0.28.0 | Bit 0 is H13's `CAPNP_FEATURE_ANSWER_FINISHED`; `capnp_core_features()` reports it. The header spells it `(1ULL << 0)`, so Swift imports it (`fc0533d`). The native bits are separate from the WASM host ABI's bits. | 2026-10-21 |
 | H13 | Tell a native host when the caller finishes a call that the host still owes (`ANSWER_FINISHED`), and let the host answer it canceled. | `docs/handoffs/H13-answer-finished-native.md` | delivered in v0.28.0 | The shape sent to capnp-swift on 2026-10-20: feature bit 0 `CAPNP_FEATURE_ANSWER_FINISHED`; opt-in `uint32_t answer_finished` at offset 56 of `capnp_conn_opts` (60 bytes now); effect `CAPNP_EFFECT_ANSWER_FINISHED` (6), withheld while a tail-call hold waits on the call; `capnp_return_canceled(conn, answer_id)`. One correction to the answer text: when the Peer keeps no record of the Finish (records full, or no memory for the record), no effect comes and `capnp_return_canceled` returns `CAPNP_E_INVAL` (no effect was queued), not `CAPNP_E_BAD_ID`. Also on main: the Peer fix for a late exception answer under out-of-memory; `capnp_finish` on an in-flight question returns `CAPNP_E_BUSY`; two header comments are fixed; a new call that reaches a host export with an id the host owes closes the connection, and the host owes at most `max_active_inbound_questions` answers ("Answer ids" in `native-abi.md`); with u32_le framing (capnp-swift's QUIC path), a failed frame now sends one Abort and keeps its cause in `capnp_conn_take_error`, and a remote Abort returns `CAPNP_E_CLOSED` with no Abort back; two Peer crashes that a host reached through the C ABI: a call pipelined on an answer whose results hold a `CAPNP_CAP_PROMISED` entry (`386d20f`), and `capnp_resolve_promise` into a cycle, now `CAPNP_E_INVAL` (`58612dc`). The header changes break capnp-swift's header snapshot gate at the pin bump; that is expected. See the relay text below. | 2026-10-21 |
-| ANSWER_FINISHED with pipelined calls | No ask: a capnp-zig defect in H13 that capnp-swift 0.2.0 hits by default. A Finish of a call that other calls are pipelined on (C++ sends Call(foo), Call(bar on foo), Finish(foo) for `foo().getSub().bar()`) queued `CAPNP_EFFECT_ANSWER_FINISHED`, and `capnp_return_canceled` then failed bar. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no effect comes while calls are pipelined on the answer, and none comes later when they go; `capnp_return_canceled` returns `CAPNP_E_INVAL` for such an answer. capnp-swift's `cancelHandlersOnFinish = true` (`RPCConnection.swift:57`) turns the effect on. Until its pin bump, the mitigation is `cancelHandlersOnFinish = false`: the core then sends no ANSWER_FINISHED, and handlers run to the end. The pin bump to v0.28.1 changes `capnp_core.h` comments only, and that trips capnp-swift's header snapshot gate; update the snapshot. Not run against a Swift server (unverified in practice). See the relay text below. | 2026-10-21 |
+| ANSWER_FINISHED with pipelined calls | No ask: a capnp-zig defect in H13 that capnp-swift 0.2.0 hits by default. A Finish of a call that other calls are pipelined on (C++ sends Call(foo), Call(bar on foo), Finish(foo) for `foo().getSub().bar()`) queued `CAPNP_EFFECT_ANSWER_FINISHED`, and `capnp_return_canceled` then failed bar. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no effect comes while a call that the caller has not finished is pipelined on the answer. It comes when the caller finishes the last such call, if the host still owes the answer; until then `capnp_return_canceled` returns `CAPNP_E_INVAL`. One case stays open with a go-capnp caller, cancel on or off: a call it finished, forwarded back to it, keeps its id in use, and the id's reuse closes the connection ("A call finished with go-capnp's Finish flag can close the connection" in [supported-surface.md](supported-surface.md)). capnp-swift's `cancelHandlersOnFinish = true` (`RPCConnection.swift:57`) turns the effect on. Until its pin bump, the mitigation is `cancelHandlersOnFinish = false`: the core then sends no ANSWER_FINISHED, and handlers run to the end. The pin bump to v0.28.1 changes `capnp_core.h` comments only, and that trips capnp-swift's header snapshot gate; update the snapshot. Not run against a Swift server (unverified in practice). See the relay text below. | 2026-10-21 |
 | Answers after close | No ask: a capnp-zig gap in the native answer functions. After a protocol failure or a remote Abort, `capnp_return_results`, `capnp_return_exception` and `capnp_return_canceled` still queued a Return after the Abort, and a call pipelined on that answer reached the host as a new INBOUND_CALL after CLOSE_REQUESTED. | none (sprint plan 2026-10-21, P1-2) | on main for v0.28.1 | Now, once the connection is closed (a protocol failure, a remote Abort, or `capnp_conn_transport_closed`), the three functions are no-ops: `CAPNP_OK` for an answer the host owes (nothing is sent, and the host owes it no more), `CAPNP_E_BAD_ID` for any other id. Two return codes change once closed: `capnp_return_canceled` gives `CAPNP_OK` where it gave `CAPNP_E_INVAL`, and after `capnp_conn_transport_closed` all three give `CAPNP_OK` where they gave `CAPNP_E_CLOSED`. A graceful `capnp_conn_shutdown` is no close: until `capnp_conn_transport_closed`, answers still go out and calls still reach the host. The P1-2 review read capnp-swift's `answerFinished` (`RPCConnection.swift:847-857`) as treating OK and BAD_ID as consumed. Not run against a Swift server (unverified in practice). The `capnp_core.h` changes are comments only. See the relay text below. | 2026-10-21 |
 
 ### Relay to capnp-swift for v0.28.1
@@ -72,10 +72,14 @@ The owner sends this text after the v0.28.1 tag exists.
 > nothing else cares about the result, so bar must still run. capnp-swift
 > 0.2.0 hits this by default: `cancelHandlersOnFinish = true` sets
 > `answer_finished`, and `answerFinished` calls `capnp_return_canceled`. In
-> v0.28.1 no effect comes while calls are pipelined on the answer, and none
-> comes later when they go: your handler's ordinary answer settles the
-> call. `capnp_return_canceled` returns `CAPNP_E_INVAL` for such an
-> answer, as for any answer without the effect. A call pipelined on an
+> v0.28.1 no effect comes while a call that the caller has not finished is
+> pipelined on the answer. It comes when the caller finishes the last such
+> call, if you still owe the answer then. Until it comes, your handler's
+> ordinary answer settles the call, and `capnp_return_canceled` returns
+> `CAPNP_E_INVAL` for it, as for any answer without the effect. A call
+> that the caller already finished does not count: go-capnp's Finish
+> (`requireEarlyCancellationWorkaround = true`) keeps it queued, and your
+> cancel gives it its one exception RETURN. A call pipelined on an
 > answer after its Finish breaks the protocol. The core now answers such a
 > call at once with an exception RETURN, as the C++ reference does, so
 > after the effect `capnp_return_canceled` still answers. Bump the pin to
@@ -83,8 +87,17 @@ The owner sends this text after the v0.28.1 tag exists.
 > changes are comments only, but they trip your header snapshot gate:
 > update the snapshot. Until the bump, set `cancelHandlersOnFinish =
 > false`: the core then sends no ANSWER_FINISHED, and handlers run to the
-> end. With v0.28.1, cancel on by default is safe again. We did not run
-> this against a Swift server.
+> end. With v0.28.1, cancel on by default no longer fails a call that
+> still waits on the answer. One case with a go-capnp caller stays open.
+> Say the caller finished a call pipelined on the answer, and your answer
+> names one of the caller's own capabilities. Then the core forwards the
+> finished call to the caller and never finishes it, and the caller's
+> reuse of that call's id closes the connection. With cancel on, this
+> happens only while the caller still wants another call pipelined on that
+> answer: otherwise you get the effect, and your cancel fails the finished
+> call first. This is the known limit "A call finished with go-capnp's
+> Finish flag can close the connection" in capnp-zig's
+> `docs/supported-surface.md`. We did not run this against a Swift server.
 >
 > **Answers after close.** Once a connection is closed,
 > `capnp_return_results`, `capnp_return_exception` and
@@ -196,7 +209,7 @@ The owner sends this text after the v0.27.0 tag exists.
 | Feature bit 10 | Level-3 handoff origination over the WASM host ABI. | `docs/rpc_l3_wasm_abi_proposal.md` | delivered in v0.22.0 | capnp-deno uses it (`@nullstyle/capnp/advanced`). | 2026-10-17 |
 | Feature bit 11 | Level-3 vat hosting over the WASM host ABI. | `docs/CHANGELOG.md` ("The VatC gap is closed") | delivered in v0.23.0 | capnp-deno uses it. | 2026-10-17 |
 | Feature bit 12 | Host answer cancellation over the WASM host ABI: the answer-finished event and `Return{canceled}`. | `docs/CHANGELOG.md` ("Host answer cancellation") | delivered in v0.24.0 | Its pin `fe6634d` has it, and its artifact advertises bits 0-12. | 2026-10-17 |
-| Answer-finished with pipelined calls | No ask: a capnp-zig defect in feature bit 12. A Finish of a call that other calls are pipelined on queued the kind-4 event, and `capnp_peer_send_return_canceled` then failed those calls. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no kind-4 event comes while calls are pipelined on the answer, and none comes later when they go; `capnp_peer_send_return_canceled` refuses such an answer (`AnswerHasPipelinedCalls`) and sends nothing. capnp-deno's RpcServerBridge (`640d8a4`, `src/rpc/server/bridge.ts:1237-1262`) answers every kind-4 event with `sendReturnCanceled`, so its pin `fe6634d` has the defect. v0.28.1 stops the cancel, but bar still fails through `HostPeer`: a call pipelined on a host call that the host answers with `capnp_peer_respond_host_call_return_frame` gets "host call failed" ("HostPeer fails a call that is pipelined on an unanswered host call" in [supported-surface.md](supported-surface.md); not fixed yet). So the relay below is held until a tag also fixes that limit. At `fe6634d`, the mitigation is to not answer canceled on answer-finished events: let the handler's answer go out. | 2026-10-21 |
+| Answer-finished with pipelined calls | No ask: a capnp-zig defect in feature bit 12. A Finish of a call that other calls are pipelined on queued the kind-4 event, and `capnp_peer_send_return_canceled` then failed those calls. | none (sprint plan 2026-10-21, P0-1) | on main for v0.28.1 | Now no kind-4 event comes while a call that the caller has not finished is pipelined on the answer. It comes when the caller finishes the last such call, if the host still owes the answer; until then `capnp_peer_send_return_canceled` refuses the answer (`AnswerHasPipelinedCalls`) and sends nothing. capnp-deno's RpcServerBridge (`640d8a4`, `src/rpc/server/bridge.ts:1237-1262`) answers every kind-4 event with `sendReturnCanceled`, so its pin `fe6634d` has the defect. v0.28.1 stops the cancel, but bar still fails through `HostPeer`: a call pipelined on a host call that the host answers with `capnp_peer_respond_host_call_return_frame` gets "host call failed" ("HostPeer fails a call that is pipelined on an unanswered host call" in [supported-surface.md](supported-surface.md); not fixed yet). So the relay below is held until a tag also fixes that limit. At `fe6634d`, the mitigation is to not answer canceled on answer-finished events: let the handler's answer go out. | 2026-10-21 |
 | Feature bit 10 follow-ups | The WASM pickup-handler export, `sendProvide` with a retained-answer or promised-answer target, and `sendThirdPartyAnswer` with a caller-chosen id. | `docs/rpc_l3_wasm_abi_proposal.md` ("Implementation deltas") | deferred | capnp-deno deferred them itself. It uses the host-driven Accept path, `importedCap` targets and auto-allocated answer ids. The two `sendProvide` target forms need no new feature bit. | 2026-10-17 |
 | Upgrade note | The L2, L3 and L4 upgrade guidance for capnp-deno (this repository's old upgrade note, last changed in `31a2ec3`). | none | closed | capnp-deno has moved past it (v0.21.0, v0.22.0, v0.23.0, then `fe6634d`). The tier rules it gave are in [stability.md](stability.md). The note is deleted. | 2026-10-17 |
 
@@ -222,16 +235,19 @@ once a tag also fixes it, and put that tag in place of `vX.Y.Z` in it.
 > `foo().getSub().bar()` when the caller drops foo's promise: Call(foo),
 > Call(bar on foo), Finish(foo). rpc.capnp lets the callee cancel only when
 > nothing else cares about the result, so bar must still run. capnp-zig
-> v0.28.1 sends no kind-4 event while calls are pipelined on the answer,
-> and none later when they go: the handler's ordinary answer settles the
-> call. `capnp_peer_send_return_canceled` refuses such an answer with
+> v0.28.1 sends no kind-4 event while a call that the caller has not
+> finished is pipelined on the answer. The event comes when the caller
+> finishes the last such call, if the host still owes the answer. Until
+> then, the handler's ordinary answer settles the call, and
+> `capnp_peer_send_return_canceled` refuses the answer with
 > `AnswerHasPipelinedCalls` and sends nothing; after that refusal, answer
-> the call as usual. A call pipelined on an answer after its Finish breaks
-> the protocol. The peer now answers such a call at once with an exception
-> Return, as the C++ reference does, so after a kind-4 event
-> `capnp_peer_send_return_canceled` still answers. Your pin `fe6634d` has
-> the defect. Move the pin to `vX.Y.Z` or later. Until then, do not answer
-> canceled on answer-finished events: let the handler's answer go out.
+> the call as usual or wait for the event. A call pipelined on an answer
+> after its Finish breaks the protocol. The peer now answers such a call
+> at once with an exception Return, as the C++ reference does, so after a
+> kind-4 event `capnp_peer_send_return_canceled` still answers. Your pin
+> `fe6634d` has the defect. Move the pin to `vX.Y.Z` or later. Until
+> then, do not answer canceled on answer-finished events: let the
+> handler's answer go out.
 
 ## slcp-zig
 

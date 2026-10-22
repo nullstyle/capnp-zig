@@ -584,22 +584,29 @@ stop the work and answer with `capnp_peer_send_return_canceled`, which
 sends `Return{canceled}` and frees the caller's question id. It refuses
 with an error, and sends nothing, while the caller has not finished the
 answer (`AnswerNotFinished`), when no Return is owed (`AnswerNotOwed`),
-or while calls pipelined on the answer wait for its results
-(`AnswerHasPipelinedCalls`).
+or while a call pipelined on the answer, which the caller has not
+finished, waits for its results (`AnswerHasPipelinedCalls`).
 
-No kind-4 record comes while calls are pipelined on the answer. Those
-calls still need its results: rpc.capnp lets the callee cancel a finished
-call only when nothing else cares about the result. No record comes later
-either, when those calls go (their caller finished them), so the host's
-ordinary answer settles the call. That wastes the host's work, but it is
-correct. The C++ reference makes this sequence for `foo().getSub().bar()`
+No kind-4 record comes while a call that the caller has not finished is
+pipelined on the answer. That call still needs the results: rpc.capnp lets
+the callee cancel a finished call only when nothing else cares about the
+result. The C++ reference makes this sequence for `foo().getSub().bar()`
 when the caller drops foo's promise: Call(foo), Call(bar on foo),
-Finish(foo). The `AnswerHasPipelinedCalls` refusal lasts only while those
-calls wait. Only calls pipelined before the Finish wait: rpc.capnp forbids
-a call pipelined after it, and the peer answers one that comes anyway at
+Finish(foo). When the caller finishes bar too, no call waits for foo's
+results, and the kind-4 record for foo comes then, if the host still owes
+foo. If the caller never finishes bar, no record comes, and the host's
+ordinary answer settles foo. A queued call that the caller already
+finished does not count. With `requireEarlyCancellationWorkaround`
+(go-capnp's Finish), such a call stays queued until foo returns, and
+`capnp_peer_send_return_canceled` of foo gives it its one exception
+Return. The `AnswerHasPipelinedCalls` refusal lasts only while a call
+waits. Only calls pipelined before the Finish wait: rpc.capnp forbids a
+call pipelined after it, and the peer answers one that comes anyway at
 once with an exception Return, as the C++ reference does. So after a
 kind-4 record, `capnp_peer_send_return_canceled` is never refused for
-this reason.
+this reason. The known limit "A call finished with go-capnp's Finish flag
+can close the connection" in [supported-surface.md](supported-surface.md)
+is in the Peer code. It is tested through the native C ABI only.
 
 Known limit: a call pipelined on a host call that the host has not
 answered fails when the host answers with

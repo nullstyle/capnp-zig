@@ -346,8 +346,8 @@ fn codeFor(err: anyerror) i32 {
         // capnp_resolve_promise to the promise itself, or into a cycle.
         error.PromiseResolutionCycle,
         error.RetainedLoopbackQuestion,
-        // capnp_return_canceled before the remote's Finish, or while calls
-        // are pipelined on the answer.
+        // capnp_return_canceled before the remote's Finish, or while a call
+        // that the remote has not finished is pipelined on the answer.
         error.AnswerNotFinished,
         error.AnswerHasPipelinedCalls,
         => CAPNP_E_INVAL,
